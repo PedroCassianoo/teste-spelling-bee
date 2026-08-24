@@ -1,0 +1,14 @@
+# Dependências e logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Sistema Operacional e IDEs
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Configurações locais com chaves privadas se houver
+*.local
