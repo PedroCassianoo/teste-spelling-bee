@@ -1,12 +1,12 @@
 // Configurações do Sistema, Deepgram e Supabase
 
 const CONFIG = {
-    // Chave da API Deepgram (TTS/STT)
-    DEEPGRAM_API_KEY: '',
+    // Chave da API Deepgram (TTS & STT)
+    DEEPGRAM_API_KEY: '63115d67aaef0948541b69d2fe6b1f6adabdef19',
     
-    // Modelos padrão da Deepgram
-    TTS_MODEL: 'aura-asteria-en',
-    STT_MODEL: 'nova-2',
+    // Modelos da Deepgram
+    TTS_MODEL: 'aura-asteria-en', // Síntese de voz feminina em inglês natural
+    STT_MODEL: 'nova-2',          // Modelo de transcrição de voz com máxima precisão
     LANGUAGE: 'en',
 
     // Configurações do Supabase
@@ -28,7 +28,7 @@ const CONFIG = {
         return Boolean(this.getApiKey() && this.getApiKey().trim().length > 0);
     },
 
-    // Supabase Anon Key Management
+    // Supabase Key Management
     getSupabaseKey() {
         return localStorage.getItem('SUPABASE_ANON_KEY') || this.SUPABASE_ANON_KEY || '';
     },

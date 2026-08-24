@@ -190,16 +190,24 @@ class SpellingBeeApp {
             }
 
             const { transcript, confidence } = await window.deepgramService.transcribeAudio(audioBlob);
-            console.log(`[Deepgram STT] Transcrição: "${transcript}" (Confiança: ${confidence})`);
+            console.log(`[Deepgram STT] Transcrição bruta: "${transcript}" (Confiança: ${confidence})`);
 
             if (!transcript) {
-                this.showFeedback("Não conseguimos ouvir nada. Tente falar mais perto do microfone.", "error");
+                this.showFeedback("Não conseguimos ouvir nada. Fale mais próximo ao microfone.", "error");
                 this.triggerShake();
                 this.setMicState('idle');
                 return;
             }
 
-            this.validateSpelling(transcript);
+            // Validação com as regras do Spelling Bee Contest (Três passos, SPACE, DOUBLE)
+            const current = this.getCurrentWord();
+            const validation = window.spellingValidator.validate(transcript, current.word);
+
+            if (validation.isValid) {
+                this.handleSuccess(validation.message, transcript);
+            } else {
+                this.handleError(validation.message, transcript);
+            }
 
         } catch (error) {
             console.error("Erro no processamento do áudio:", error);
@@ -209,50 +217,20 @@ class SpellingBeeApp {
         }
     }
 
-    /**
-     * Valida a transcrição recebida em relação à palavra/frase esperada
-     */
-    validateSpelling(userTranscript) {
-        const current = this.getCurrentWord();
-        const expected = current.word.trim().toLowerCase();
-        const spoken = userTranscript.trim().toLowerCase();
-
-        // Normalização: remove pontuações e múltiplos espaços
-        const normalize = (str) => str.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-        
-        const normSpoken = normalize(spoken);
-        const normExpected = normalize(expected);
-
-        // Remove todos os espaços para comparar caso tenha sido soletrado letra a letra
-        const noSpaceSpoken = normSpoken.replace(/\s+/g, '');
-        const noSpaceExpected = normExpected.replace(/\s+/g, '');
-
-        const isMatch = (normSpoken === normExpected) || 
-                        (noSpaceSpoken === noSpaceExpected) || 
-                        normSpoken.includes(normExpected) ||
-                        noSpaceSpoken.includes(noSpaceExpected);
-
-        if (isMatch) {
-            this.handleSuccess(userTranscript);
-        } else {
-            this.handleError(userTranscript, current.word);
-        }
-    }
-
-    handleSuccess(transcript) {
+    handleSuccess(message, rawTranscript) {
         this.isCompleted = true;
         this.setMicState('success');
-        this.showFeedback(`Excelente! Identificado: "${transcript}". Correto!`, "success");
+        this.showFeedback(message, "success");
         
         this.btnNext.classList.add('animate-pulse');
-        setTimeout(() => this.btnNext.classList.remove('animate-pulse'), 2000);
+        setTimeout(() => this.btnNext.classList.remove('animate-pulse'), 2500);
     }
 
-    handleError(transcript, expected) {
+    handleError(message, rawTranscript) {
         this.isCompleted = false;
         this.setMicState('idle');
         this.triggerShake();
-        this.showFeedback(`Ouvido: "${transcript}". Esperado: "${expected}". Tente novamente!`, "error");
+        this.showFeedback(message, "error");
     }
 
     setMicState(state) {
@@ -266,7 +244,7 @@ class SpellingBeeApp {
                 break;
             case 'processing':
                 this.btnMic.classList.add('opacity-70');
-                this.micStatusText.textContent = "Analisando com Deepgram...";
+                this.micStatusText.textContent = "Analisando 3 passos com Deepgram...";
                 this.micIcon.textContent = "hourglass_empty";
                 break;
             case 'success':
@@ -290,9 +268,9 @@ class SpellingBeeApp {
         this.feedbackBanner.classList.remove('hidden', 'opacity-0');
         
         if (type === 'success') {
-            this.feedbackBanner.className = 'w-full max-w-sm mx-auto p-3 rounded-full border border-primary bg-surface-container-high text-primary text-center font-label-lg text-xs tracking-wider transition-all duration-300';
+            this.feedbackBanner.className = 'w-full max-w-md mx-auto p-4 rounded-2xl border border-primary bg-surface-container-high text-primary text-center font-label-lg text-xs tracking-wider transition-all duration-300 shadow-lg';
         } else {
-            this.feedbackBanner.className = 'w-full max-w-sm mx-auto p-3 rounded-full border border-red-500 bg-surface-container-low text-red-300 text-center font-label-lg text-xs tracking-wider transition-all duration-300';
+            this.feedbackBanner.className = 'w-full max-w-md mx-auto p-4 rounded-2xl border border-red-500 bg-surface-container-low text-red-300 text-center font-label-lg text-xs tracking-wider transition-all duration-300 shadow-lg';
         }
     }
 
@@ -315,7 +293,7 @@ class SpellingBeeApp {
             this.currentIndex++;
             this.renderWord();
         } else {
-            this.showFeedback("Parabéns! Você concluiu a rodada de 10 palavras!", "success");
+            this.showFeedback("🎉 Parabéns! Você concluiu todas as 10 palavras do treino!", "success");
             this.progressIndicator.textContent = "10 / 10 Concluído";
         }
     }
@@ -353,7 +331,7 @@ class SpellingBeeApp {
 
         this.checkApiKeyBadge();
         this.closeSettingsModal();
-        this.showFeedback("Configurações salvas com sucesso!", "success");
+        this.showFeedback("Chave Deepgram salva com sucesso!", "success");
         this.loadWordsFromSupabase();
     }
 

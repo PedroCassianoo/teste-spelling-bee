@@ -116,7 +116,7 @@
         <!-- Botão de Configurações da API Deepgram & Supabase -->
         <button id="btn-settings" aria-label="Configurações" class="text-primary hover:opacity-80 transition-opacity duration-200 flex items-center justify-center p-sm rounded-full active:bg-surface-variant focus:outline-none focus:ring-1 focus:ring-primary relative cursor-pointer">
             <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">settings</span>
-            <span id="key-status-badge" class="w-2 h-2 rounded-full bg-yellow-400 absolute top-1 right-1"></span>
+            <span id="key-status-badge" class="w-2 h-2 rounded-full bg-green-400 absolute top-1 right-1"></span>
         </button>
     </header>
 
@@ -124,7 +124,7 @@
     <main class="flex-grow flex flex-col items-center justify-center px-margin-mobile w-full max-w-container-max mx-auto space-y-lg py-lg relative">
         
         <!-- Feedback Banner -->
-        <div id="feedback-banner" class="hidden transition-smooth opacity-0 w-full max-w-sm mx-auto p-3 rounded-full border border-primary bg-surface-container-high text-primary text-center font-label-lg text-xs tracking-wider">
+        <div id="feedback-banner" class="hidden transition-smooth opacity-0 w-full max-w-md mx-auto p-4 rounded-2xl border border-primary bg-surface-container-high text-primary text-center font-label-lg text-xs tracking-wider shadow-lg">
             <span id="feedback-text">Pronto para começar</span>
         </div>
 
@@ -143,7 +143,7 @@
                 <div class="absolute inset-0 rounded-full bg-primary opacity-0 group-active:opacity-20 transition-opacity duration-300 pointer-events-none"></div>
                 <span id="mic-icon" class="material-symbols-outlined text-5xl transition-transform group-hover:scale-110 group-active:scale-95 z-10" style="font-variation-settings: 'FILL' 0;">mic</span>
             </button>
-            <p id="mic-status-text" class="font-body-md text-body-md text-on-surface-variant opacity-80 select-none text-center max-w-[240px]">
+            <p id="mic-status-text" class="font-body-md text-body-md text-on-surface-variant opacity-80 select-none text-center max-w-[280px]">
                 Clique para falar
             </p>
         </div>
@@ -193,6 +193,7 @@
     <script src="js/config.js"></script>
     <script src="js/words.js"></script>
     <script src="js/deepgram.js"></script>
+    <script src="js/spellingValidator.js"></script>
     <script src="js/app.js"></script>
 </body>
 </html>
