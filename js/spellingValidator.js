@@ -291,26 +291,50 @@ class SpellingValidator {
     }
 
     /**
-     * Tokeniza e mapeia foneticamente todo o fluxo transcrito pelo STT
-     * @param {string} rawText 
-     * @returns {Array<string>} Tokens normalizados
+     * Calcula similaridade de Levenshtein entre duas strings de palavras completas
+     * @param {string} str1 
+     * @param {string} str2 
+     * @returns {number} Similaridade de 0.0 a 1.0
      */
-    tokenize(rawText) {
-        if (!rawText || typeof rawText !== 'string') return [];
+    calculateWordSimilarity(str1, str2) {
+        if (!str1 || !str2) return 0;
+        const s1 = str1.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+        const s2 = str2.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+        
+        if (s1 === s2) return 1.0;
+        if (s1.includes(s2)) return 0.95; // O prefixo/sufixo contém a frase alvo completa
+
+        const maxLen = Math.max(s1.length, s2.length);
+        if (maxLen === 0) return 1.0;
+
+        const dist = this.levenshteinDistance(s1, s2);
+        return Math.max(0, 1 - (dist / maxLen));
+    }
+
+    /**
+     * Tokeniza rastreando os índices de origem em rawWords e diferenciando palavras inteiras de letras
+     * @param {string} rawText 
+     * @returns {{ rawWords: Array<string>, tokens: Array<string>, wordIndices: Array<{ startWord: number, endWord: number, isWholeWord: boolean }> }}
+     */
+    tokenizeWithIndices(rawText) {
+        if (!rawText || typeof rawText !== 'string') return { rawWords: [], tokens: [], wordIndices: [] };
         const cleanStr = (str) => str.toLowerCase().replace(/[-–—.,!?:;"]/g, ' ').replace(/\s+/g, ' ').trim();
         const cleaned = cleanStr(rawText);
-        const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
-        const resultadoSoletracao = [];
+        const rawWords = cleaned.split(/\s+/).filter(t => t.length > 0);
+        
+        const tokens = [];
+        const wordIndices = [];
         let i = 0;
 
-        while (i < tokens.length) {
-            const token = tokens[i];
-            const nextToken = tokens[i + 1] || '';
+        while (i < rawWords.length) {
+            const token = rawWords[i];
+            const nextToken = rawWords[i + 1] || '';
             const compoundToken = `${token} ${nextToken}`.trim();
 
             // 1. Tratar "double you" / "double u" -> 'W'
             if (this.DICIONARIO[compoundToken] === 'W') {
-                resultadoSoletracao.push('W');
+                tokens.push('W');
+                wordIndices.push({ startWord: i, endWord: i + 1, isWholeWord: false });
                 i += 2;
                 continue;
             }
@@ -318,17 +342,24 @@ class SpellingValidator {
             // 2. Tratar comando DOUBLE + [Letra] (ex: "double" + "tea" -> "T", "T")
             if (this.DICIONARIO[token] === 'DOUBLE' && nextToken) {
                 const mappedLetter = this.DICIONARIO[nextToken] || nextToken.toUpperCase();
-                resultadoSoletracao.push(mappedLetter);
-                resultadoSoletracao.push(mappedLetter);
+                tokens.push(mappedLetter);
+                wordIndices.push({ startWord: i, endWord: i + 1, isWholeWord: false });
+                tokens.push(mappedLetter);
+                wordIndices.push({ startWord: i, endWord: i + 1, isWholeWord: false });
                 i += 2;
                 continue;
             }
 
             // 3. Aplicação do Dicionário De-Para no Token
             if (this.DICIONARIO[token]) {
-                resultadoSoletracao.push(this.DICIONARIO[token]);
+                tokens.push(this.DICIONARIO[token]);
+                wordIndices.push({ startWord: i, endWord: i, isWholeWord: false });
+            } else if (token.length === 1) {
+                tokens.push(token.toUpperCase());
+                wordIndices.push({ startWord: i, endWord: i, isWholeWord: false });
             } else {
-                // Fallback fonético inteligente: Soundex e Metaphone contra nomes de letras
+                // É uma palavra inteira (não é letra isolada nem comando de soletração)
+                // Fallback fonético para possíveis nomes de letras
                 let matchedLetter = null;
                 const tokenSound = this.soundex(token);
                 const tokenMeta = this.metaphone(token);
@@ -341,18 +372,30 @@ class SpellingValidator {
                 }
 
                 if (matchedLetter) {
-                    resultadoSoletracao.push(matchedLetter);
+                    tokens.push(matchedLetter);
+                    wordIndices.push({ startWord: i, endWord: i, isWholeWord: false });
                 } else {
-                    // Caracteres soltos concatenados
+                    // Palavra inteira pronunciada
                     for (const ch of token) {
                         const mappedCh = this.DICIONARIO[ch] || ch.toUpperCase();
-                        resultadoSoletracao.push(mappedCh);
+                        tokens.push(mappedCh);
+                        wordIndices.push({ startWord: i, endWord: i, isWholeWord: true });
                     }
                 }
             }
             i++;
         }
-        return resultadoSoletracao;
+
+        return { rawWords, tokens, wordIndices };
+    }
+
+    /**
+     * Tokeniza e mapeia foneticamente todo o fluxo transcrito pelo STT (compatibilidade retroativa)
+     * @param {string} rawText 
+     * @returns {Array<string>} Tokens normalizados
+     */
+    tokenize(rawText) {
+        return this.tokenizeWithIndices(rawText).tokens;
     }
 
     /**
@@ -368,21 +411,23 @@ class SpellingValidator {
     }
 
     // =========================================================================
-    // VALIDAÇÃO INTELIGENTE DE SOLETRAÇÃO (FAST TRACK + SLIDING WINDOW SCANNER)
+    // VALIDAÇÃO ESTRITA DO SPELLING BEE (PALAVRA + SOLETRAÇÃO + PALAVRA)
     // =========================================================================
 
     /**
-     * Validação Inteligente do Spelling Bee via Busca por Substring e Janela Deslizante
+     * Validação Rigorosa do Spelling Bee via Fatiamento por Âncora
      * @param {string} transcricaoStt - Retorno bruto do STT (Deepgram)
      * @param {string} palavraAlvo - Palavra/Frase alvo do gabarito (ex: "as tasty as", "taught")
-     * @param {Object} [options] - Opções de validação (ex: { threshold: 0.85 })
+     * @param {Object} [options] - Opções de validação (threshold de soletração: 0.85, bordas: 0.70)
      */
     validate(transcricaoStt, palavraAlvo, options = {}) {
         const threshold = typeof options.threshold === 'number' ? options.threshold : this.DEFAULT_SIMILARITY_THRESHOLD;
+        const edgeThreshold = typeof options.edgeThreshold === 'number' ? options.edgeThreshold : 0.70;
 
         if (!transcricaoStt || !transcricaoStt.trim()) {
             return {
                 isValid: false,
+                isFullyCompliant: false,
                 reason: 'NO_SPEECH',
                 message: 'Não conseguimos capturar sua voz. Fale próximo ao microfone.',
                 details: {}
@@ -392,131 +437,273 @@ class SpellingValidator {
         const cleanStr = (str) => str.toLowerCase().replace(/[-–—.,!?:;"]/g, ' ').replace(/\s+/g, ' ').trim();
         const rawText = cleanStr(transcricaoStt);
         const target = cleanStr(palavraAlvo);
-        const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-        // Auditoria pedagógica do padrão de 3 passos (Palavra Inicial + Soletração + Palavra Final)
-        const prefixRegex = new RegExp(`^${escapeRegExp(target)}(\\s+|$)`, 'i');
-        const suffixRegex = new RegExp(`(\\s+|^)${escapeRegExp(target)}$`, 'i');
-        const hasInitialWord = prefixRegex.test(rawText);
-        const hasFinalWord = suffixRegex.test(rawText);
-
-        // 1. Tokenização completa do áudio detectado e construção do gabarito canônico
-        const detectedTokens = this.tokenize(rawText);
+        // 1. Tokenização com rastreamento de índices de palavras
+        const { rawWords, tokens, wordIndices } = this.tokenizeWithIndices(rawText);
         const gabaritoArray = this._buildGabarito(palavraAlvo);
+        const stringGabarito = gabaritoArray.join(' - ');
 
-        const gabaritoJoined = gabaritoArray.join(' ');
-        const detectedJoined = detectedTokens.join(' ');
+        const targetWords = palavraAlvo.trim().split(/\s+/);
+        const hasSpaceRequirement = targetWords.length > 1;
+        const noSpaceExpected = gabaritoArray.filter(x => x !== 'SPACE').join('');
 
-        let bestSimilarity = 0;
-        let matchedTokens = [];
-        let matchReason = '';
-        let isExact = false;
+        // 2. ENCONTRAR TODOS OS CANDIDATOS A ÂNCORA DE SOLETRAÇÃO (Miolo)
+        const targetLen = gabaritoArray.length;
+        const minWindow = Math.max(1, targetLen - (hasSpaceRequirement ? 4 : 2));
+        const maxWindow = Math.min(tokens.length, targetLen + 2);
 
-        // 2. O CAMINHO FELIZ (Fast Track: Busca por Subarray / Substring Exato)
-        // Se a soletração perfeita está contida em qualquer lugar da fala, aprova instantaneamente com 100%!
-        if (` ${detectedJoined} `.includes(` ${gabaritoJoined} `)) {
-            bestSimilarity = 1.0;
-            isExact = true;
-            matchedTokens = [...gabaritoArray];
-            matchReason = 'FAST_TRACK_EXACT';
-        } else {
-            // 3. O CAMINHO FLEXÍVEL (Sliding Window Fuzzy Search)
-            // Desliza janelas adaptativas (L-2 a L+2) para encontrar o miolo com maior pontuação acústica
-            const targetLen = gabaritoArray.length;
-            const minWindow = Math.max(1, targetLen - 2);
-            const maxWindow = Math.min(detectedTokens.length, targetLen + 2);
+        let candidates = [];
+        let missingSpaceCandidate = null;
 
+        // Varre todas as janelas possíveis
+        for (let w = minWindow; w <= maxWindow; w++) {
+            for (let i = 0; i <= tokens.length - w; i++) {
+                const windowSlice = tokens.slice(i, i + w);
+                const windowIndices = wordIndices.slice(i, i + w);
+
+                // Uma janela de soletração NÃO pode conter palavras inteiras pronunciadas (isWholeWord)
+                const containsWholeWords = windowIndices.some(idx => idx.isWholeWord);
+                if (containsWholeWords && rawWords.length > 1) {
+                    continue;
+                }
+
+                const sim = this.calculateSimilarity(windowSlice, gabaritoArray);
+                const startWord = wordIndices[i]?.startWord ?? 0;
+                const endWord = wordIndices[i + w - 1]?.endWord ?? rawWords.length - 1;
+
+                // Verifica se é uma soletração correta mas sem SPACE
+                const noSpaceMatched = windowSlice.filter(x => x !== 'SPACE').join('');
+                const matchNoSpace = (noSpaceMatched === noSpaceExpected);
+                if (hasSpaceRequirement && !windowSlice.includes('SPACE') && matchNoSpace) {
+                    missingSpaceCandidate = {
+                        startIndex: i,
+                        endIndex: i + w,
+                        matchedTokens: windowSlice,
+                        similarity: sim
+                    };
+                }
+
+                if (sim >= threshold) {
+                    const prefixWords = rawWords.slice(0, startWord);
+                    const suffixWords = rawWords.slice(endWord + 1);
+                    const prefixText = prefixWords.join(' ').trim();
+                    const suffixText = suffixWords.join(' ').trim();
+
+                    const prefixSim = prefixText ? this.calculateWordSimilarity(prefixText, target) : 0;
+                    const suffixSim = suffixText ? this.calculateWordSimilarity(suffixText, target) : 0;
+
+                    let totalScore = sim * 100;
+                    if (prefixSim >= edgeThreshold) totalScore += 30;
+                    if (suffixSim >= edgeThreshold) totalScore += 30;
+
+                    candidates.push({
+                        startIndex: i,
+                        endIndex: i + w,
+                        matchedTokens: windowSlice,
+                        similarity: sim,
+                        startWord,
+                        endWord,
+                        prefixText,
+                        suffixText,
+                        prefixSim,
+                        suffixSim,
+                        totalScore
+                    });
+                }
+            }
+        }
+
+        // Se encontrou candidato com falta de SPACE e nenhum candidato completo
+        if (candidates.length === 0 && missingSpaceCandidate) {
+            return {
+                isValid: false,
+                isFullyCompliant: false,
+                similarity: missingSpaceCandidate.similarity,
+                type: 'error',
+                reason: 'MISSING_SPACE',
+                message: `⚠️ Você esqueceu de falar "SPACE" para separar as palavras da expressão!`,
+                details: {
+                    similarity: missingSpaceCandidate.similarity,
+                    textoOriginal: rawText,
+                    arrayLetrasDetectadas: tokens,
+                    arrayLetrasCasadas: missingSpaceCandidate.matchedTokens,
+                    stringFinal: missingSpaceCandidate.matchedTokens.join(' - '),
+                    stringGabarito: stringGabarito
+                }
+            };
+        }
+
+        // Se nenhum candidato de soletração atingiu o threshold (85%)
+        if (candidates.length === 0) {
+            let bestSim = 0;
+            let bestWindow = tokens;
             for (let w = minWindow; w <= maxWindow; w++) {
-                for (let i = 0; i <= detectedTokens.length - w; i++) {
-                    const windowSlice = detectedTokens.slice(i, i + w);
-                    const sim = this.calculateSimilarity(windowSlice, gabaritoArray);
-
-                    // Prioriza janela que possui SPACE caso o gabarito exija e as notas empatem
-                    const currentHasSpace = windowSlice.includes('SPACE');
-                    const bestHasSpace = matchedTokens.includes('SPACE');
-                    const gabaritoHasSpace = gabaritoArray.includes('SPACE');
-
-                    const shouldReplace = (sim > bestSimilarity) || 
-                        (sim === bestSimilarity && gabaritoHasSpace && currentHasSpace && !bestHasSpace);
-
-                    if (shouldReplace) {
-                        bestSimilarity = sim;
-                        matchedTokens = windowSlice;
-                        matchReason = 'SLIDING_WINDOW_FUZZY';
+                for (let i = 0; i <= tokens.length - w; i++) {
+                    const slice = tokens.slice(i, i + w);
+                    const s = this.calculateSimilarity(slice, gabaritoArray);
+                    if (s > bestSim) {
+                        bestSim = s;
+                        bestWindow = slice;
                     }
                 }
             }
 
-            // Fallback de contingência caso os tokens sejam menores que targetLen - 2
-            if (matchedTokens.length === 0) {
-                bestSimilarity = this.calculateSimilarity(detectedTokens, gabaritoArray);
-                matchedTokens = detectedTokens;
-                matchReason = 'FULL_TOKENS_FALLBACK';
-            }
+            const pct = Math.round(bestSim * 100);
+            return {
+                isValid: false,
+                isFullyCompliant: false,
+                similarity: bestSim,
+                type: 'error',
+                reason: 'SPELLING_ERROR',
+                message: `❌ Erro na soletração (Similaridade: ${pct}%). Esperado: [${stringGabarito}]`,
+                details: {
+                    similarity: bestSim,
+                    textoOriginal: rawText,
+                    arrayLetrasDetectadas: tokens,
+                    arrayLetrasCasadas: bestWindow,
+                    stringFinal: bestWindow.join(' - '),
+                    stringGabarito: stringGabarito
+                }
+            };
         }
 
-        // 4. Verificação de Requisito de Espaço para Expressões Compostas
-        const targetWords = palavraAlvo.trim().split(/\s+/);
-        const hasSpaceRequirement = targetWords.length > 1;
+        // Ordena os candidatos pela maior pontuação total (melhor encaixe de soletração + bordas)
+        candidates.sort((a, b) => b.totalScore - a.totalScore);
+        const bestCandidate = candidates[0];
 
-        // Identifica se o aluno acertou todas as letras mas esqueceu de pronunciar o comando SPACE
+        const {
+            matchedTokens,
+            similarity,
+            prefixText,
+            suffixText,
+            prefixSim,
+            suffixSim
+        } = bestCandidate;
+
+        const stringFinalExtraida = matchedTokens.join(' - ');
+
+        // 3. VERIFICAÇÃO DE ESPAÇO EM EXPRESSÕES COMPOSTAS
         const noSpaceMatched = matchedTokens.filter(x => x !== 'SPACE').join('');
-        const noSpaceExpected = gabaritoArray.filter(x => x !== 'SPACE').join('');
         const matchNoSpace = (noSpaceMatched === noSpaceExpected);
         const missingSpaceDetected = hasSpaceRequirement && !matchedTokens.includes('SPACE') && matchNoSpace;
 
-        const meetsThreshold = bestSimilarity >= threshold;
-        const stringFinalExtraida = matchedTokens.join(' - ');
-        const stringGabarito = gabaritoArray.join(' - ');
-
-        let isValid = isExact || (meetsThreshold && !missingSpaceDetected);
-        let isFullyCompliant = isExact && hasInitialWord && hasFinalWord;
-        let message = '';
-        let type = 'success';
-
-        // 5. Geração de Feedback Pedagógico Preciso
-        if (isFullyCompliant) {
-            message = `🎉 Perfeito! Executou os 3 passos rigorosamente: Palavra ➔ Soletração ➔ Palavra!`;
-        } else if (isExact) {
-            if (!hasInitialWord && !hasFinalWord) {
-                message = `✅ Soletração perfeita! Lembre-se de falar a palavra no início e no final.`;
-            } else if (!hasInitialWord) {
-                message = `✅ Soletração perfeita! Lembre-se de falar a palavra antes de começar.`;
-            } else {
-                message = `✅ Soletração perfeita! Lembre-se de repetir a palavra ao finalizar.`;
-            }
-        } else if (missingSpaceDetected) {
-            isValid = false;
-            type = 'error';
-            message = `⚠️ Você esqueceu de falar "SPACE" para separar as palavras da expressão!`;
-        } else if (meetsThreshold) {
-            isValid = true;
-            type = 'success';
-            const pct = Math.round(bestSimilarity * 100);
-            message = `✅ Excelente! Soletração aprovada por similaridade fonética (${pct}%).`;
-            if (!hasInitialWord || !hasFinalWord) {
-                message += ` Lembre-se do padrão de 3 passos (Palavra ➔ Soletração ➔ Palavra).`;
-            }
-        } else {
-            isValid = false;
-            type = 'error';
-            const pct = Math.round(bestSimilarity * 100);
-            message = `❌ Erro na soletração (Similaridade: ${pct}%). Esperado: [${stringGabarito}]`;
+        if (missingSpaceDetected) {
+            return {
+                isValid: false,
+                isFullyCompliant: false,
+                similarity: similarity,
+                type: 'error',
+                reason: 'MISSING_SPACE',
+                message: `⚠️ Você esqueceu de falar "SPACE" para separar as palavras da expressão!`,
+                details: {
+                    similarity: similarity,
+                    textoOriginal: rawText,
+                    arrayLetrasDetectadas: tokens,
+                    arrayLetrasCasadas: matchedTokens,
+                    stringFinal: stringFinalExtraida,
+                    stringGabarito: stringGabarito
+                }
+            };
         }
 
+        // 4. FATIAMENTO POR ÂNCORA & VERIFICAÇÃO DAS BORDAS (Prefixo e Sufixo >= 70%)
+        const temInicio = prefixText.length > 0 && prefixSim >= edgeThreshold;
+        const temFim = suffixText.length > 0 && suffixSim >= edgeThreshold;
+
+        // 5. REGRAS DE NEGÓCIO ESTRITAS (Bloqueios Obrigatórios dos 3 Passos)
+        if (!temInicio && !temFim) {
+            return {
+                isValid: false,
+                isFullyCompliant: false,
+                similarity: similarity,
+                type: 'error',
+                reason: 'MISSING_BOTH_WORDS',
+                message: `❌ Reprovado: Você esqueceu de falar a palavra no início e no final.`,
+                details: {
+                    temInicio,
+                    temFim,
+                    prefixText,
+                    suffixText,
+                    prefixSim,
+                    suffixSim,
+                    similarity: similarity,
+                    textoOriginal: rawText,
+                    arrayLetrasDetectadas: tokens,
+                    arrayLetrasCasadas: matchedTokens,
+                    stringFinal: stringFinalExtraida,
+                    stringGabarito: stringGabarito
+                }
+            };
+        }
+
+        if (!temInicio) {
+            return {
+                isValid: false,
+                isFullyCompliant: false,
+                similarity: similarity,
+                type: 'error',
+                reason: 'MISSING_INITIAL_WORD',
+                message: `❌ Reprovado: Faltou falar a palavra antes de soletrar.`,
+                details: {
+                    temInicio,
+                    temFim,
+                    prefixText,
+                    suffixText,
+                    prefixSim,
+                    suffixSim,
+                    similarity: similarity,
+                    textoOriginal: rawText,
+                    arrayLetrasDetectadas: tokens,
+                    arrayLetrasCasadas: matchedTokens,
+                    stringFinal: stringFinalExtraida,
+                    stringGabarito: stringGabarito
+                }
+            };
+        }
+
+        if (!temFim) {
+            return {
+                isValid: false,
+                isFullyCompliant: false,
+                similarity: similarity,
+                type: 'error',
+                reason: 'MISSING_FINAL_WORD',
+                message: `❌ Reprovado: Faltou falar a palavra para finalizar.`,
+                details: {
+                    temInicio,
+                    temFim,
+                    prefixText,
+                    suffixText,
+                    prefixSim,
+                    suffixSim,
+                    similarity: similarity,
+                    textoOriginal: rawText,
+                    arrayLetrasDetectadas: tokens,
+                    arrayLetrasCasadas: matchedTokens,
+                    stringFinal: stringFinalExtraida,
+                    stringGabarito: stringGabarito
+                }
+            };
+        }
+
+        // 6. APROVAÇÃO 100% RIGOROSA (Palavra + Soletração + Palavra)
         return {
-            isValid: isValid,
-            isFullyCompliant: isFullyCompliant,
-            similarity: bestSimilarity,
-            type: type,
-            message: message,
+            isValid: true,
+            isFullyCompliant: true,
+            similarity: similarity,
+            type: 'success',
+            reason: 'APPROVED_3_STEPS',
+            message: `🎉 Perfeito! Executou os 3 passos rigorosamente: Palavra ➔ Soletração ➔ Palavra!`,
             details: {
-                hasInitialWord,
-                hasFinalWord,
-                similarity: bestSimilarity,
-                matchReason,
+                temInicio,
+                temFim,
+                prefixText,
+                suffixText,
+                prefixSim,
+                suffixSim,
+                similarity: similarity,
                 textoOriginal: rawText,
-                arrayLetrasDetectadas: detectedTokens,
+                arrayLetrasDetectadas: tokens,
                 arrayLetrasCasadas: matchedTokens,
                 stringFinal: stringFinalExtraida,
                 stringGabarito: stringGabarito

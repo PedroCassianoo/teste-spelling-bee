@@ -61,40 +61,41 @@ As APIs de STT (como Deepgram) utilizam modelos de linguagem que tendem a força
 
 ---
 
-## 3. Lógica de Validação Definitiva: Busca por Substring & Janela Deslizante (Sliding Window)
+## 3. Lógica de Validação Estrita: Fatiamento por Âncora (Palavra + Soletração + Palavra)
 
-Para um briefing de centenas ou milhares de palavras, tentar recortar e limpar perfeitamente as bordas com Regex falha quando a API de STT sofre pequenas distorções no início ou no fim da fala (ex: *"s a a s ... s a s"*).
-
-A arquitetura oficial adota o princípio do **Scanner Inteligente**:
-O sistema atua como um scanner procurando a sequência correta escondida dentro de todo o áudio capturado.
+Para garantir o cumprimento rigoroso das regras oficiais do *Spelling Bee*, a soletração correta é apenas o passo central de uma estrutura obrigatória de três etapas:
 
 ```
-Texto Bruto ➔ Tokenização Fonética Completa ➔ Fast Track (includes) ➔ Sliding Window Fuzzy Scanner ➔ Veredito & Feedback
+[Prefixo: Palavra Alvo] ➔ [Âncora: Soletração com SPACE/DOUBLE] ➔ [Sufixo: Palavra Alvo]
 ```
+
+O sistema localiza a **âncora de soletração** no meio da frase e avalia separadamente o que foi dito antes (Prefixo) e depois (Sufixo), utilizando tolerância de **70%** nas extremidades para absorver pequenas imperfeições de microfone/STT.
 
 ---
 
 ## 4. Pipeline de Execução em 5 Etapas
 
-### Passo 1: Tokenização Fonética Completa
-Toda a string capturada pelo STT é convertida em uma sequência contínua de tokens fonéticos utilizando o Dicionário De-Para, tratamento de compostos (`W`, `DOUBLE <LETRA>`) e fallback com Soundex / Metaphone.
+### Passo 1: Tokenização com Rastreamento de Palavras
+A transcrição é convertida em tokens rastreando a correspondência exata com as palavras originais da fala (`rawWords`), separando palavras completas de letras isoladas e comandos de soletração (`SPACE`, `DOUBLE`).
 
-### Passo 2: O Caminho Feliz (Fast Track / Substring Exata)
-O sistema verifica se a sequência exata de tokens do gabarito está contida de forma contígua em qualquer lugar da cadeia detectada:
-- `if (" " + detectedTokens.join(" ") + " ").includes(" " + gabaritoTokens.join(" ") + " ")`
-- Se positivo, aprova instantaneamente com **100% de similaridade**, eliminando custo computacional e ruídos nas bordas.
+### Passo 2: Localização da Âncora de Soletração (Miolo)
+O sistema busca a sequência de soletração ideal através de Fast Track e Sliding Window Fuzzy Matching (com tolerância de 85% e matriz acústica).
+- Se a soletração for inferior a 85%, o aluno é reprovado de imediato: `❌ Erro na soletração`.
 
-### Passo 3: O Caminho Flexível (Sliding Window Fuzzy Search)
-Caso a API tenha tido 1 erro acústico de letra ou o aluno tenha feito uma leve hesitação:
-- Desliza janelas de tamanho elástico ($L-2$ até $L+2$) pela cadeia de tokens detectados.
-- Calcula a Distância de Levenshtein Ponderada Foneticamente (com Matriz de Confusão Acústica: B/V, M/N, T/D, S/C, etc.) para cada janela.
-- Seleciona o trecho com a maior pontuação acústica.
-
-### Passo 4: Verificação Pedagógica de `SPACE`
-Em termos compostos ou expressões (ex: *"as tasty as"*, *"more slowly"*):
-- Se o miolo identificado corresponde a todas as letras da expressão mas o comando `SPACE` não foi pronunciado, o sistema emite feedback pedagógico específico:
+### Passo 3: Verificação Pedagógica de `SPACE`
+Em expressões compostas (ex: *"as tasty as"*, *"more slowly"*):
+- Se o miolo corresponde a todas as letras mas o comando `SPACE` foi omitido, emite feedback orientador:
   `⚠️ Você esqueceu de falar "SPACE" para separar as palavras da expressão!`
 
-### Passo 5: Auditoria dos 3 Passos (Palavra ➔ Soletração ➔ Palavra)
-O sistema analisa se a palavra alvo foi dita no início e no final para conceder a certificação de cumprimento rigoroso dos 3 passos, incentivando a prática pedagógica ideal sem penalizar a nota da soletração quando esta estiver correta.
+### Passo 4: Fatiamento por Âncora e Avaliação das Extremidades
+Com a âncora isolada, o sistema extrai o Prefixo e o Sufixo e calcula a similaridade contra a palavra alvo com threshold de 70%:
+- `temInicio = prefixSim >= 0.70`
+- `temFim = suffixSim >= 0.70`
+
+### Passo 5: Bloqueios Obrigatórios e Aprovação
+- **Faltou ambos:** `❌ Reprovado: Você esqueceu de falar a palavra no início e no final.`
+- **Faltou início:** `❌ Reprovado: Faltou falar a palavra antes de soletrar.`
+- **Faltou fim:** `❌ Reprovado: Faltou falar a palavra para finalizar.`
+- **Completo:** `🎉 Perfeito! Executou os 3 passos rigorosamente: Palavra ➔ Soletração ➔ Palavra!`
+
 
