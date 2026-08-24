@@ -193,20 +193,22 @@ class SpellingBeeApp {
             console.log(`[Deepgram STT] Transcrição bruta: "${transcript}" (Confiança: ${confidence})`);
 
             if (!transcript) {
-                this.showFeedback("Não conseguimos ouvir nada. Fale mais próximo ao microfone.", "error");
+                this.showFeedback("Não conseguimos ouvir sua fala. Fale mais próximo ao microfone.", "error");
                 this.triggerShake();
                 this.setMicState('idle');
                 return;
             }
 
-            // Validação com as regras do Spelling Bee Contest (Três passos, SPACE, DOUBLE)
+            // Validação com o motor oficial (docs/spelling_bee_rules_normalization.md)
             const current = this.getCurrentWord();
             const validation = window.spellingValidator.validate(transcript, current.word);
 
+            console.log("[SpellingValidator] Resultado detalhado:", validation);
+
             if (validation.isValid) {
-                this.handleSuccess(validation.message, transcript);
+                this.handleSuccess(validation.message, validation.details);
             } else {
-                this.handleError(validation.message, transcript);
+                this.handleError(validation.message, validation.details);
             }
 
         } catch (error) {
@@ -217,20 +219,32 @@ class SpellingBeeApp {
         }
     }
 
-    handleSuccess(message, rawTranscript) {
+    handleSuccess(message, details) {
         this.isCompleted = true;
         this.setMicState('success');
-        this.showFeedback(message, "success");
+        
+        let fullFeedback = message;
+        if (details && details.parsedSpelling) {
+            fullFeedback += `\nSoletração detectada: ${details.parsedSpelling}`;
+        }
+        
+        this.showFeedback(fullFeedback, "success");
         
         this.btnNext.classList.add('animate-pulse');
         setTimeout(() => this.btnNext.classList.remove('animate-pulse'), 2500);
     }
 
-    handleError(message, rawTranscript) {
+    handleError(message, details) {
         this.isCompleted = false;
         this.setMicState('idle');
         this.triggerShake();
-        this.showFeedback(message, "error");
+
+        let fullFeedback = message;
+        if (details && details.parsedSpelling) {
+            fullFeedback += `\nDetectado no miolo: ${details.parsedSpelling}`;
+        }
+
+        this.showFeedback(fullFeedback, "error");
     }
 
     setMicState(state) {
@@ -264,7 +278,8 @@ class SpellingBeeApp {
     showFeedback(message, type = "success") {
         if (!this.feedbackBanner || !this.feedbackText) return;
 
-        this.feedbackText.textContent = message;
+        // Renderiza quebras de linha limpas
+        this.feedbackText.innerHTML = message.replace(/\n/g, '<br><span class="text-[11px] opacity-80 mt-1 block">') + (message.includes('\n') ? '</span>' : '');
         this.feedbackBanner.classList.remove('hidden', 'opacity-0');
         
         if (type === 'success') {

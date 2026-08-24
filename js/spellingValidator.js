@@ -1,255 +1,319 @@
-// Motor de Validação do Spelling Bee Contest (Regras Red Balloon)
-// Regra dos Três Passos (Palavra -> Soletração com SPACE/DOUBLE -> Palavra)
+/**
+ * Motor de Validação Fonética do Spelling Bee
+ * Baseado na documentação oficial: docs/spelling_bee_rules_normalization.md
+ * 
+ * Executa as 3 etapas de isolamento:
+ * 1. Recorte das Extremidades (Trim Target inicial e final)
+ * 2. Aplicação do Dicionário De-Para no Miolo (Parsing de STT Alucinações)
+ * 3. Comparação de Gabarito (Target Canonical Spelling)
+ */
 
 class SpellingValidator {
     constructor() {
-        // Mapeamento fonético abrangente das letras em inglês geradas por STT
-        this.LETTER_MAP = {
-            'a': ['a', 'ay', 'ei', 'ey', 'hey'],
-            'b': ['b', 'be', 'bee'],
-            'c': ['c', 'see', 'sea', 'si'],
-            'd': ['d', 'de', 'dee'],
-            'e': ['e', 'ee'],
-            'f': ['f', 'ef', 'eff', 'if'],
-            'g': ['g', 'gee', 'ji'],
-            'h': ['h', 'aitch', 'ach', 'eight', 'eitch', 'hache'],
-            'i': ['i', 'eye', 'aye', 'ai'],
-            'j': ['j', 'jay', 'jei'],
-            'k': ['k', 'kay', 'kei'],
-            'l': ['l', 'el', 'ell'],
-            'm': ['m', 'em'],
-            'n': ['n', 'en', 'an', 'and'],
-            'o': ['o', 'oh', 'ou'],
-            'p': ['p', 'pe', 'pee', 'pi'],
-            'q': ['q', 'cue', 'queue', 'kyu'],
-            'r': ['r', 'ar', 'are', 'our'],
-            's': ['s', 'es', 'ess'],
-            't': ['t', 'te', 'tee', 'tea', 'ti'],
-            'u': ['u', 'you', 'yu'],
-            'v': ['v', 've', 'vee', 'vi'],
-            'w': ['w', 'double u', 'double-u', 'double you', 'doubleyou', 'dabliu'],
-            'x': ['x', 'ex', 'axe'],
-            'y': ['y', 'why', 'wai', 'uai'],
-            'z': ['z', 'zee', 'zed', 'zi']
+        // Dicionário Fonético Oficial De-Para (Tabela 2 do Documento)
+        this.PHONETIC_DICTIONARY = {
+            'A': ['a', 'ah', 'aye', 'eight', 'ay', 'ei'],
+            'B': ['be', 'bee', 'b'],
+            'C': ['see', 'sea', 'si', 'c'],
+            'D': ['de', 'di', 'thee', 'd', 'dee'],
+            'E': ['i', 'he', 'e', 'ee'],
+            'F': ['ef', 'half', 'if', 'f', 'eff'],
+            'G': ['jee', 'gee', 'g', 'ji'],
+            'H': ['aitch', 'age', 'eight', 'h', 'ach', 'eitch', 'hache'],
+            'I': ['eye', 'aye', 'ah', 'i'],
+            'J': ['jay', 'hey', 'j', 'jei'],
+            'K': ['kay', 'ok', 'k', 'kei'],
+            'L': ['el', 'hell', 'l', 'ell'],
+            'M': ['em', 'am', 'm'],
+            'N': ['en', 'an', 'and', 'in', 'n'],
+            'O': ['oh', 'owe', 'zero', 'o', 'ou'],
+            'P': ['pe', 'pee', 'pea', 'p', 'pi'],
+            'Q': ['queue', 'cue', 'q', 'kyu'],
+            'R': ['are', 'our', 'ar', 'r'],
+            'S': ['as', 'is', 'yes', 'ass', 'es', 's', 'ess'],
+            'T': ['tea', 'tee', 'ti', 't'],
+            'U': ['you', 'yu', 'u'],
+            'V': ['ve', 'vee', 'v', 'vi'],
+            'W': ['double you', 'double u', 'double-u', 'w', 'doubleyou', 'dabliu'],
+            'X': ['ex', 'axe', 'x'],
+            'Y': ['why', 'wai', 'y', 'uai'],
+            'Z': ['zee', 'zed', 'c', 'z', 'zi']
         };
 
-        // Tokens aceitos para o comando SPACE
-        this.SPACE_TOKENS = ['space', 'blank', 'pace', 'place', 'escape', 'espace'];
+        // Comandos Especiais da Tabela 2
+        this.SPACE_COMMANDS = ['space', 'pace', 'spice', 'base', 'spay', 'blank'];
+        this.DOUBLE_COMMANDS = ['double', 'buble', 'dabble', 'bobble'];
     }
 
     /**
-     * Valida a transcrição do aluno contra a palavra/expressão esperada
-     * @param {string} rawTranscript - Texto transcrito pela Deepgram
-     * @param {string} targetWord - Palavra ou frase alvo (ex: "as tasty as", "happy", "sweeter than")
+     * Valida a transcrição bruta do STT contra a palavra/expressão esperada
+     * @param {string} rawTranscript - Transcrição bruta vinda da API Deepgram
+     * @param {string} targetPhrase - Frase ou palavra alvo (ex: "as tasty as", "happy", "taught")
      */
-    validate(rawTranscript, targetWord) {
+    validate(rawTranscript, targetPhrase) {
         if (!rawTranscript || !rawTranscript.trim()) {
             return {
                 isValid: false,
                 reason: 'NO_SPEECH',
-                message: 'Não conseguimos ouvir nada. Fale próximo ao microfone.',
+                message: 'Não conseguimos ouvir sua fala. Fale próximo ao microfone.',
                 details: {}
             };
         }
 
-        const transcript = rawTranscript.trim().toLowerCase();
-        const target = targetWord.trim().toLowerCase();
-        const targetWordsList = target.split(/\s+/);
-        const hasSpaceRequirement = targetWordsList.length > 1;
+        const raw = rawTranscript.trim().toLowerCase();
+        const target = targetPhrase.trim().toLowerCase();
+        const targetWords = target.split(/\s+/);
+        const hasSpaceRequirement = targetWords.length > 1;
 
-        // Normalização de tokens falados
-        let tokens = this._tokenize(transcript);
+        // Limpeza básica mantendo as palavras
+        const tokens = this._tokenize(raw);
 
-        // 1. Verificar Passo 1 (Palavra inicial dita)
-        const initialCheck = this._extractInitialTarget(tokens, target);
-        tokens = initialCheck.remainingTokens;
+        // =========================================================================
+        // PASSO 1: Recorte das Extremidades (Trim Target)
+        // =========================================================================
+        const trimResult = this._trimTargetExtremities(tokens, targetWords);
+        const hasInitialWord = trimResult.hasInitial;
+        const hasFinalWord = trimResult.hasFinal;
+        const middleTokens = trimResult.middleTokens;
 
-        // 2. Verificar Passo 3 (Palavra final dita)
-        const finalCheck = this._extractFinalTarget(tokens, target);
-        tokens = finalCheck.remainingTokens;
+        // =========================================================================
+        // PASSO 2: Aplicação do Dicionário no Miolo (Parsing)
+        // =========================================================================
+        const parsedSequence = this._parseMiddleTokens(middleTokens);
 
-        // 3. Verificar Passo 2 (Soletração no miolo com SPACE e DOUBLE)
-        const spellingCheck = this._validateSpellingTokens(tokens, target, hasSpaceRequirement);
+        // =========================================================================
+        // PASSO 3: Comparação de Gabarito
+        // =========================================================================
+        const expectedSequence = this._buildCanonicalSequence(targetWords);
+        const comparison = this._compareSequences(parsedSequence, expectedSequence, hasSpaceRequirement);
 
-        const hasInitialWord = initialCheck.found;
-        const hasFinalWord = finalCheck.found;
-        const isSpellingValid = spellingCheck.isValid;
+        // Avaliação global com base nos 3 passos do Spelling Bee
+        const isSpellingCorrect = comparison.isMatch;
+        const isFullyCompliant = isSpellingCorrect && hasInitialWord && hasFinalWord;
+        const isValid = isSpellingCorrect; // Aceita se soletração estiver correta, informando dicas
 
-        // Avaliação do status global
-        const isFullyValid = isSpellingValid && (hasInitialWord || hasFinalWord || spellingCheck.exactSpellingMatch);
+        let message = '';
+        let type = 'success';
 
-        let feedbackMessage = '';
-        let feedbackType = 'success';
-
-        if (isFullyValid) {
-            if (hasInitialWord && hasFinalWord) {
-                feedbackMessage = `🎉 Perfeito! Você cumpriu os 3 passos: Palavra ➔ Soletração ➔ Palavra!`;
-            } else if (hasInitialWord || hasFinalWord) {
-                feedbackMessage = `✨ Excelente soletração! Dica: Lembre-se de sempre dizer a palavra no início e no final.`;
+        if (isFullyCompliant) {
+            message = `🎉 Perfeito! Você cumpriu com maestria os 3 passos: Palavra ➔ Soletração ➔ Palavra!`;
+        } else if (isSpellingCorrect) {
+            if (!hasInitialWord && !hasFinalWord) {
+                message = `✅ Soletração perfeita! Lembre-se da regra de ouro: diga a palavra no início e no fim.`;
+            } else if (!hasInitialWord) {
+                message = `✅ Soletração correta! Lembre-se de dizer a palavra antes de começar a soletrar.`;
             } else {
-                feedbackMessage = `✅ Soletração correta! Lembre-se da regra dos 3 passos (Palavra ➔ Soletração ➔ Palavra).`;
+                message = `✅ Soletração correta! Lembre-se de repetir a palavra após terminar de soletrar.`;
             }
         } else {
-            feedbackType = 'error';
-            if (spellingCheck.missingSpace) {
-                feedbackMessage = `⚠️ Você esqueceu de falar "SPACE" entre as palavras da expressão!`;
-            } else if (spellingCheck.spellingError) {
-                feedbackMessage = `❌ Erro na soletração: ${spellingCheck.errorDetail || 'Verifique as letras e tente novamente.'}`;
-            } else if (!hasInitialWord && !hasFinalWord) {
-                feedbackMessage = `⚠️ Lembre-se da regra dos 3 passos: Diga a palavra, soletre e repita a palavra!`;
+            type = 'error';
+            if (comparison.missingSpace) {
+                message = `⚠️ Você esqueceu de falar "SPACE" para separar as palavras!`;
+            } else if (comparison.errorDetail) {
+                message = `❌ ${comparison.errorDetail}`;
             } else {
-                feedbackMessage = `Tente novamente. Palavra esperada: "${targetWord.toUpperCase()}".`;
+                message = `❌ Soletração incorreta. Esperado: "${expectedSequence.join(' - ')}"`;
             }
         }
 
         return {
-            isValid: isFullyValid,
-            message: feedbackMessage,
-            type: feedbackType,
+            isValid: isValid,
+            isFullyCompliant: isFullyCompliant,
+            type: type,
+            message: message,
             details: {
                 hasInitialWord,
                 hasFinalWord,
-                isSpellingValid,
-                transcript: rawTranscript,
-                expected: targetWord,
-                spellingFeedback: spellingCheck
+                parsedSpelling: parsedSequence.join(' - '),
+                expectedSpelling: expectedSequence.join(' - '),
+                rawTranscript: rawTranscript,
+                comparison: comparison
             }
         };
     }
 
     _tokenize(text) {
-        // Substitui traços e pontuações por espaços
-        const clean = text.replace(/[-–—.,!?:;"]/g, ' ');
+        // Normaliza caracteres mantendo apenas letras e separadores
+        const clean = text.replace(/[-–—.,!?:;"]/g, ' ').toLowerCase();
         return clean.split(/\s+/).filter(t => t.length > 0);
     }
 
-    _extractInitialTarget(tokens, target) {
-        const targetWords = target.split(/\s+/);
-        if (tokens.length >= targetWords.length) {
-            const candidate = tokens.slice(0, targetWords.length).join(' ');
-            if (this._fuzzyMatch(candidate, target)) {
-                return { found: true, remainingTokens: tokens.slice(targetWords.length) };
+    /**
+     * Passo 1: Recorta a primeira e a última menção da frase alvo
+     */
+    _trimTargetExtremities(tokens, targetWords) {
+        let currentTokens = [...tokens];
+        let hasInitial = false;
+        let hasFinal = false;
+
+        const targetLen = targetWords.length;
+        const targetStr = targetWords.join(' ');
+
+        // Checagem Inicial
+        if (currentTokens.length >= targetLen) {
+            const head = currentTokens.slice(0, targetLen).join(' ');
+            if (this._fuzzyTargetMatch(head, targetStr)) {
+                hasInitial = true;
+                currentTokens = currentTokens.slice(targetLen);
             }
         }
-        return { found: false, remainingTokens: tokens };
+
+        // Checagem Final
+        if (currentTokens.length >= targetLen) {
+            const tail = currentTokens.slice(currentTokens.length - targetLen).join(' ');
+            if (this._fuzzyTargetMatch(tail, targetStr)) {
+                hasFinal = true;
+                currentTokens = currentTokens.slice(0, currentTokens.length - targetLen);
+            }
+        }
+
+        return {
+            hasInitial,
+            hasFinal,
+            middleTokens: currentTokens
+        };
     }
 
-    _extractFinalTarget(tokens, target) {
-        const targetWords = target.split(/\s+/);
-        if (tokens.length >= targetWords.length) {
-            const candidate = tokens.slice(tokens.length - targetWords.length).join(' ');
-            if (this._fuzzyMatch(candidate, target)) {
-                return { found: true, remainingTokens: tokens.slice(0, tokens.length - targetWords.length) };
-            }
-        }
-        return { found: false, remainingTokens: tokens };
-    }
-
-    _validateSpellingTokens(tokens, target, hasSpaceRequirement) {
-        // Monta a sequência esperada de letras e 'SPACE'
-        const expectedSequence = [];
-        const words = target.split(/\s+/);
-
-        for (let wIdx = 0; wIdx < words.length; wIdx++) {
-            const word = words[wIdx];
-            for (let i = 0; i < word.length; i++) {
-                expectedSequence.push(word[i]);
-            }
-            if (wIdx < words.length - 1) {
-                expectedSequence.push('SPACE');
-            }
-        }
-
-        // Converte os tokens falados em letras correspondentes
-        const parsedLetters = [];
+    /**
+     * Passo 2: Aplicação do dicionário De-Para termo a termo no miolo
+     */
+    _parseMiddleTokens(tokens) {
+        const result = [];
         let i = 0;
-        let usedSpaceToken = false;
 
         while (i < tokens.length) {
             const token = tokens[i];
             const nextToken = tokens[i + 1] || '';
+            const twoTokens = `${token} ${nextToken}`.trim();
 
-            // Checagem de DOUBLE <LETTER>
-            if (token === 'double' && nextToken) {
-                const char = this._identifyLetter(nextToken);
-                if (char) {
-                    parsedLetters.push(char);
-                    parsedLetters.push(char);
+            // 1. Tratar "double you" / "double u" -> 'W'
+            if (twoTokens === 'double you' || twoTokens === 'double u' || twoTokens === 'double-u') {
+                result.push('W');
+                i += 2;
+                continue;
+            }
+
+            // 2. Tratar comando DOUBLE + [Letra] (ex: "double" + "tea" -> "TT")
+            if (this.DOUBLE_COMMANDS.includes(token) && nextToken) {
+                const letter = this._mapTokenToLetter(nextToken);
+                if (letter) {
+                    result.push(letter);
+                    result.push(letter);
                     i += 2;
                     continue;
                 }
             }
 
-            // Checagem de SPACE
-            if (this.SPACE_TOKENS.includes(token)) {
-                parsedLetters.push('SPACE');
-                usedSpaceToken = true;
+            // 3. Tratar comando SPACE
+            if (this.SPACE_COMMANDS.includes(token)) {
+                result.push('SPACE');
                 i++;
                 continue;
             }
 
-            // Checagem de letra individual
-            const letter = this._identifyLetter(token);
+            // 4. Mapeamento termo a termo via Dicionário Fonético
+            const letter = this._mapTokenToLetter(token);
             if (letter) {
-                parsedLetters.push(letter);
+                result.push(letter);
             } else {
-                // Se o token for uma palavra curta ou soletração compacta
-                for (const ch of token) {
-                    if (ch >= 'a' && ch <= 'z') parsedLetters.push(ch);
+                // Caso a API tenha agrupado caracteres soltos (ex: "cat" soletrado muito rápido)
+                for (const char of token) {
+                    const mappedChar = this._mapTokenToLetter(char);
+                    if (mappedChar) {
+                        result.push(mappedChar);
+                    }
                 }
             }
             i++;
         }
 
-        // Checagem de espaço obrigatório
-        if (hasSpaceRequirement && !usedSpaceToken && parsedLetters.includes('SPACE') === false) {
-            // Verifica se o aluno soletrou todas as letras mas esqueceu o space
-            const lettersOnlyExpected = expectedSequence.filter(x => x !== 'SPACE').join('');
-            const lettersOnlyParsed = parsedLetters.filter(x => x !== 'SPACE').join('');
-            if (lettersOnlyExpected === lettersOnlyParsed) {
-                return { isValid: false, missingSpace: true, spellingError: true, errorDetail: 'Esqueceu de dizer "SPACE".' };
+        return result;
+    }
+
+    /**
+     * Passo 3: Monta a sequência canônica esperada (letras + SPACE)
+     */
+    _buildCanonicalSequence(targetWords) {
+        const expected = [];
+        for (let wIdx = 0; wIdx < targetWords.length; wIdx++) {
+            const word = targetWords[wIdx];
+            for (let cIdx = 0; cIdx < word.length; cIdx++) {
+                expected.push(word[cIdx].toUpperCase());
+            }
+            if (wIdx < targetWords.length - 1) {
+                expected.push('SPACE');
             }
         }
+        return expected;
+    }
 
-        // Comparação com a sequência esperada (permitindo com ou sem o token explícito de SPACE se tolerante)
-        const parsedStr = parsedLetters.join('');
-        const expectedStr = expectedSequence.join('');
-        const parsedNoSpace = parsedLetters.filter(x => x !== 'SPACE').join('');
-        const expectedNoSpace = expectedSequence.filter(x => x !== 'SPACE').join('');
+    /**
+     * Passo 3: Compara a sequência gerada com o gabarito
+     */
+    _compareSequences(parsedSeq, expectedSeq, hasSpaceRequirement) {
+        const parsedStr = parsedSeq.join(' ');
+        const expectedStr = expectedSeq.join(' ');
 
-        const exactMatch = (parsedStr === expectedStr);
-        const matchNoSpace = (parsedNoSpace === expectedNoSpace);
+        // 1. Casamento exato com SPACE
+        if (parsedStr === expectedStr) {
+            return { isMatch: true };
+        }
 
-        if (exactMatch || matchNoSpace) {
+        // 2. Checagem de esquecimento do SPACE
+        const parsedNoSpace = parsedSeq.filter(x => x !== 'SPACE').join(' ');
+        const expectedNoSpace = expectedSeq.filter(x => x !== 'SPACE').join(' ');
+
+        if (hasSpaceRequirement && parsedNoSpace === expectedNoSpace && !parsedSeq.includes('SPACE')) {
             return {
-                isValid: true,
-                exactSpellingMatch: exactMatch,
-                parsedLetters: parsedLetters
+                isMatch: false,
+                missingSpace: true,
+                errorDetail: 'Você esqueceu de falar "SPACE" para separar as palavras!'
             };
         }
 
+        // 3. Casamento tolerante (se não era estritamente obrigatório)
+        if (parsedNoSpace === expectedNoSpace) {
+            return { isMatch: true };
+        }
+
+        // 4. Identificação da primeira letra divergente para feedback detalhado
+        let errorDetail = '';
+        for (let i = 0; i < Math.max(parsedSeq.length, expectedSeq.length); i++) {
+            const expectedChar = expectedSeq[i];
+            const parsedChar = parsedSeq[i];
+
+            if (expectedChar !== parsedChar) {
+                if (!parsedChar) {
+                    errorDetail = `Faltou soletrar a partir de "${expectedChar}".`;
+                } else if (!expectedChar) {
+                    errorDetail = `Letras a mais após o final: "${parsedChar}".`;
+                } else {
+                    errorDetail = `Identificado "${parsedChar}", mas o correto era "${expectedChar}".`;
+                }
+                break;
+            }
+        }
+
         return {
-            isValid: false,
-            spellingError: true,
-            errorDetail: `Letras identificadas: ${parsedLetters.join(' - ').toUpperCase() || '(nenhuma)'}`,
-            parsedLetters: parsedLetters
+            isMatch: false,
+            errorDetail: errorDetail || `Soletração obtida: [${parsedSeq.join(' - ')}]`
         };
     }
 
-    _identifyLetter(token) {
+    _mapTokenToLetter(token) {
         const clean = token.toLowerCase().trim();
-        for (const [letter, phoneticList] of Object.entries(this.LETTER_MAP)) {
-            if (clean === letter || phoneticList.includes(clean)) {
+        for (const [letter, variations] of Object.entries(this.PHONETIC_DICTIONARY)) {
+            if (clean === letter.toLowerCase() || variations.includes(clean)) {
                 return letter;
             }
         }
         return null;
     }
 
-    _fuzzyMatch(spoken, target) {
-        const s = spoken.replace(/[^a-z]/g, '');
-        const t = target.replace(/[^a-z]/g, '');
-        return s === t || s.includes(t) || t.includes(s);
+    _fuzzyTargetMatch(candidate, target) {
+        const c = candidate.replace(/[^a-z0-9]/g, '');
+        const t = target.replace(/[^a-z0-9]/g, '');
+        return c === t || c.includes(t) || t.includes(c);
     }
 }
 
