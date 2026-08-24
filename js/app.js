@@ -12,7 +12,6 @@ class SpellingBeeApp {
         this.initElements();
         this.attachEvents();
         this.initDatabaseAndRender();
-        this.checkApiKeyBadge();
     }
 
     initElements() {
@@ -25,15 +24,6 @@ class SpellingBeeApp {
         this.btnNext = document.getElementById('btn-next');
         this.feedbackBanner = document.getElementById('feedback-banner');
         this.feedbackText = document.getElementById('feedback-text');
-
-        // Modal de Configuração
-        this.btnSettings = document.getElementById('btn-settings');
-        this.settingsModal = document.getElementById('settings-modal');
-        this.btnSaveKey = document.getElementById('btn-save-key');
-        this.btnCloseModal = document.getElementById('btn-close-modal');
-        this.apiKeyInput = document.getElementById('api-key-input');
-        this.supabaseKeyInput = document.getElementById('supabase-key-input');
-        this.keyStatusBadge = document.getElementById('key-status-badge');
     }
 
     attachEvents() {
@@ -48,14 +38,6 @@ class SpellingBeeApp {
 
         // Botão voltar
         this.btnBack.addEventListener('click', () => this.handleBack());
-
-        // Gerenciamento de Modal e API Key
-        this.btnSettings.addEventListener('click', () => this.openSettingsModal());
-        this.btnCloseModal.addEventListener('click', () => this.closeSettingsModal());
-        this.btnSaveKey.addEventListener('click', () => this.saveApiKey());
-        this.settingsModal.addEventListener('click', (e) => {
-            if (e.target === this.settingsModal) this.closeSettingsModal();
-        });
     }
 
     async initDatabaseAndRender() {
@@ -183,9 +165,8 @@ class SpellingBeeApp {
     async processAudio(audioBlob) {
         try {
             if (!window.CONFIG.hasApiKey()) {
-                this.openSettingsModal();
                 this.setMicState('idle');
-                this.showFeedback("Insira sua chave Deepgram para transcrever o áudio.", "error");
+                this.showFeedback("Chave Deepgram não configurada.", "error");
                 return;
             }
 
@@ -323,48 +304,6 @@ class SpellingBeeApp {
         if (this.currentIndex > 0) {
             this.currentIndex--;
             this.renderWord();
-        }
-    }
-
-    // Modal de Configurações
-    openSettingsModal() {
-        this.apiKeyInput.value = window.CONFIG.getApiKey();
-        if (this.supabaseKeyInput) {
-            this.supabaseKeyInput.value = window.CONFIG.getSupabaseKey();
-        }
-        this.settingsModal.classList.remove('hidden');
-        this.settingsModal.classList.add('flex');
-    }
-
-    closeSettingsModal() {
-        this.settingsModal.classList.add('hidden');
-        this.settingsModal.classList.remove('flex');
-    }
-
-    saveApiKey() {
-        const deepgramKey = this.apiKeyInput.value.trim();
-        window.CONFIG.setApiKey(deepgramKey);
-
-        if (this.supabaseKeyInput) {
-            const supabaseKey = this.supabaseKeyInput.value.trim();
-            window.CONFIG.setSupabaseKey(supabaseKey);
-        }
-
-        this.checkApiKeyBadge();
-        this.closeSettingsModal();
-        this.showFeedback("Chave Deepgram salva com sucesso!", "success");
-        this.loadWordsFromSupabase();
-    }
-
-    checkApiKeyBadge() {
-        if (!this.keyStatusBadge) return;
-        const hasKey = window.CONFIG.hasApiKey();
-        if (hasKey) {
-            this.keyStatusBadge.className = "w-2 h-2 rounded-full bg-green-400 absolute top-1 right-1";
-            this.keyStatusBadge.title = "Deepgram API Conectada";
-        } else {
-            this.keyStatusBadge.className = "w-2 h-2 rounded-full bg-yellow-400 absolute top-1 right-1 animate-ping";
-            this.keyStatusBadge.title = "Chave Deepgram Pendente";
         }
     }
 }
