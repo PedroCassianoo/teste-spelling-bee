@@ -189,7 +189,8 @@ class SpellingBeeApp {
                 return;
             }
 
-            const { transcript, confidence } = await window.deepgramService.transcribeAudio(audioBlob);
+            const current = this.getCurrentWord();
+            const { transcript, confidence } = await window.deepgramService.transcribeAudio(audioBlob, current.word);
             console.log(`[Deepgram STT] Transcrição bruta: "${transcript}" (Confiança: ${confidence})`);
 
             if (!transcript) {
@@ -199,8 +200,7 @@ class SpellingBeeApp {
                 return;
             }
 
-            // Validação com o motor oficial (docs/spelling_bee_rules_normalization.md)
-            const current = this.getCurrentWord();
+            // Validação com o motor oficial (SpellingValidator com Levenshtein & Fonética)
             const validation = window.spellingValidator.validate(transcript, current.word);
 
             console.log("[SpellingValidator] Resultado detalhado:", validation);
@@ -224,8 +224,11 @@ class SpellingBeeApp {
         this.setMicState('success');
         
         let fullFeedback = message;
-        if (details && details.parsedSpelling) {
-            fullFeedback += `\nSoletração detectada: ${details.parsedSpelling}`;
+        if (details && details.stringFinal) {
+            fullFeedback += `\nSoletração: ${details.stringFinal}`;
+        }
+        if (details && typeof details.similarity === 'number' && details.similarity < 1) {
+            fullFeedback += ` (Precisão: ${Math.round(details.similarity * 100)}%)`;
         }
         
         this.showFeedback(fullFeedback, "success");
@@ -240,8 +243,11 @@ class SpellingBeeApp {
         this.triggerShake();
 
         let fullFeedback = message;
-        if (details && details.parsedSpelling) {
-            fullFeedback += `\nDetectado no miolo: ${details.parsedSpelling}`;
+        if (details && details.stringFinal) {
+            fullFeedback += `\nDetectado: [${details.stringFinal}]`;
+        }
+        if (details && typeof details.similarity === 'number' && details.similarity > 0) {
+            fullFeedback += ` (Similaridade: ${Math.round(details.similarity * 100)}%)`;
         }
 
         this.showFeedback(fullFeedback, "error");

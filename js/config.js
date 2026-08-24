@@ -11,7 +11,7 @@ const CONFIG = {
 
     // Configurações do Supabase
     SUPABASE_URL: 'https://huposeqxiumvexadrylt.supabase.co',
-    SUPABASE_ANON_KEY: '',
+    SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh1cG9zZXF4aXVtdmV4YWRyeWx0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1MjMwNDAsImV4cCI6MjEwMzA5OTA0MH0.rrieTaDOA4V7J1-cOPr2GWZlClGrJkfsosDAX8PDZzU',
 
     // Deepgram Key Management
     getApiKey() {
