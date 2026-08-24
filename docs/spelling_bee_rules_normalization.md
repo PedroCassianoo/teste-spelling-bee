@@ -86,3 +86,29 @@ O que sobra é estritamente o bloco de soletração. O sistema aplica o "De-Para
 
 **Passo 3: Comparação de Gabarito**
 Com o bloco de soletração higienizado (`A S SPACE T A S T Y SPACE A S`), o sistema compara diretamente com a *string* correta salva no banco de dados. Qualquer divergência percentual mínima (ou falha completa) aciona o erro, conforme as configurações de tolerância do aplicativo.
+
+---
+
+## 4. Ordem de Processamento Obrigatória (Pipeline de Higienização)
+
+**O Problema (Vazamento do Alvo):** Se as regras de separação de letras e o dicionário fonético forem aplicados à string inteira, o sistema destruirá a pronúncia inicial e final da palavra alvo. Por exemplo, na frase "as tasty as", o termo "as" será transformado na letra "S" e "tasty" será soletrado indevidamente pelo sistema (gerando falsos erros como `S - T - A - S - T - Y - S`).
+
+**A Regra (Strict Execution Pipeline):** O backend/frontend deve **obrigatoriamente** processar a string de retorno da API seguindo esta ordem cronológica exata:
+
+### Passo 1: Captura e Padronização Inicial
+- Receber a string bruta do STT.
+- Converter tudo para letras minúsculas (lowercase) e remover pontuações extras para facilitar a busca.
+- *Exemplo de entrada:* `"as tasty as a as space tea a as tea why space a as as tasty as"`
+
+### Passo 2: Extração das Bordas (Trim Target) ANTES de qualquer modificação
+- O sistema deve buscar a palavra/frase alvo (gabarito) no **início (prefixo)** e no **final (sufixo)** da string e removê-las.
+- *Lógica recomendada (Regex):* Substituir `^as tasty as` (início) e `as tasty as$` (fim) por um espaço vazio.
+- *Resultado após Passo 2:* `" a as space tea a as tea why space a as "`
+
+### Passo 3: Isolamento da Área de Soletração (Miolo)
+- O que sobra da string após o Passo 2 é classificado como o "Miolo de Soletração".
+- É estritamente proibido aplicar o dicionário fora desta área.
+
+### Passo 4: Aplicação do Dicionário e Split
+- **Somente agora** o sistema aplica a tabela "De-Para" (Ex: converte `"as"` para `S`, `"space"` para `SPACE`, `"double" + "tea"` para `TT`).
+- Compara a string final gerada com o gabarito de soletração do banco de dados.
