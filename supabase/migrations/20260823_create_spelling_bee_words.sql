@@ -27,7 +27,7 @@ values
     (1, 'as tasty as', 'a-s [space] t-a-s-t-y [space] a-s', 'as tasty as', 1),
     (2, 'taught', 't-a-u-g-h-t', 'taught', 2),
     (3, 'more slowly', 'm-o-r-e [space] s-l-o-w-l-y', 'more slowly', 3),
-    (4, 'sweeter than', 's-w-e-double e-t-e-r [space] t-h-a-n', 'sweeter than', 4),
+    (4, 'sweeter than', 's-w-double e-t-e-r [space] t-h-a-n', 'sweeter than', 4),
     (5, 'make fun of friends', 'm-a-k-e [space] f-u-n [space] o-f [space] f-r-i-e-n-d-s', 'make fun of friends', 5),
     (6, 'carefully', 'c-a-r-e-f-u-l-l-y', 'carefully', 6),
     (7, 'fast', 'f-a-s-t', 'fast', 7),

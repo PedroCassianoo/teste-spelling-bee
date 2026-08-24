@@ -26,7 +26,7 @@ const WORDS_DATABASE = [
     {
         id: 4,
         word: "sweeter than",
-        spelling: "s-w-e-double e-t-e-r [space] t-h-a-n",
+        spelling: "s-w-double e-t-e-r [space] t-h-a-n",
         full_phrase: "sweeter than",
         display_order: 4
     },

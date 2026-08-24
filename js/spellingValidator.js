@@ -291,77 +291,15 @@ class SpellingValidator {
     }
 
     /**
-     * Calcula a similaridade normalizada entre 0.0 (0%) e 1.0 (100%)
+     * Tokeniza e mapeia foneticamente todo o fluxo transcrito pelo STT
+     * @param {string} rawText 
+     * @returns {Array<string>} Tokens normalizados
      */
-    calculateSimilarity(detectedTokens, targetTokens) {
-        const maxLen = Math.max(detectedTokens.length, targetTokens.length);
-        if (maxLen === 0) return 1.0;
-
-        // 1. Similaridade Fonética Ponderada nos Tokens
-        const weightedDist = this.weightedLevenshteinDistance(detectedTokens, targetTokens);
-        const tokenSimilarity = Math.max(0, 1 - (weightedDist / maxLen));
-
-        // 2. Similaridade de Caracteres nas letras puras (sem SPACE)
-        const detChars = detectedTokens.filter(x => x !== 'SPACE').join('');
-        const tgtChars = targetTokens.filter(x => x !== 'SPACE').join('');
-        const charMaxLen = Math.max(detChars.length, tgtChars.length);
-        let charSimilarity = 0;
-        if (charMaxLen > 0) {
-            const rawDist = this.levenshteinDistance(detChars, tgtChars);
-            charSimilarity = Math.max(0, 1 - (rawDist / charMaxLen));
-        }
-
-        return Math.max(tokenSimilarity, charSimilarity);
-    }
-
-    // =========================================================================
-    // PIPELINE ESTRITO DE HIGIENIZAÇÃO E VALIDAÇÃO
-    // =========================================================================
-
-    /**
-     * Pipeline Estrito de Higienização e Validação do Spelling Bee
-     * @param {string} transcricaoStt - Retorno bruto do STT (Deepgram)
-     * @param {string} palavraAlvo - Palavra/Frase alvo do gabarito (ex: "as tasty as", "taught")
-     * @param {Object} [options] - Opções de validação (ex: { threshold: 0.85 })
-     */
-    validate(transcricaoStt, palavraAlvo, options = {}) {
-        const threshold = typeof options.threshold === 'number' ? options.threshold : this.DEFAULT_SIMILARITY_THRESHOLD;
-
-        if (!transcricaoStt || !transcricaoStt.trim()) {
-            return {
-                isValid: false,
-                reason: 'NO_SPEECH',
-                message: 'Não conseguimos capturar sua voz. Fale próximo ao microfone.',
-                details: {}
-            };
-        }
-
-        // =========================================================================
-        // PASSO 1: Captura e Padronização Inicial
-        // =========================================================================
+    tokenize(rawText) {
+        if (!rawText || typeof rawText !== 'string') return [];
         const cleanStr = (str) => str.toLowerCase().replace(/[-–—.,!?:;"]/g, ' ').replace(/\s+/g, ' ').trim();
-        const rawText = cleanStr(transcricaoStt);
-        const target = cleanStr(palavraAlvo);
-
-        // Helper para escapar Regex
-        const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-        // =========================================================================
-        // PASSO 2: Extração das Bordas (Trim Target) ANTES de qualquer modificação
-        // =========================================================================
-        const prefixRegex = new RegExp(`^${escapeRegExp(target)}(\\s+|$)`, 'i');
-        const suffixRegex = new RegExp(`(\\s+|^)${escapeRegExp(target)}$`, 'i');
-
-        const hasInitialWord = prefixRegex.test(rawText);
-        const hasFinalWord = suffixRegex.test(rawText);
-
-        // Remove o alvo das pontas e isola estritamente o "Miolo"
-        let miolo = rawText.replace(prefixRegex, '').replace(suffixRegex, '').trim();
-
-        // =========================================================================
-        // PASSO 3 & 4: Processamento do Miolo, Dicionário De-Para & Fallback Fonético
-        // =========================================================================
-        const tokens = miolo.split(/\s+/).filter(t => t.length > 0);
+        const cleaned = cleanStr(rawText);
+        const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
         const resultadoSoletracao = [];
         let i = 0;
 
@@ -390,8 +328,7 @@ class SpellingValidator {
             if (this.DICIONARIO[token]) {
                 resultadoSoletracao.push(this.DICIONARIO[token]);
             } else {
-                // Fallback fonético inteligente: se token não consta no dicionário,
-                // testa Soundex/Metaphone contra os nomes de letras
+                // Fallback fonético inteligente: Soundex e Metaphone contra nomes de letras
                 let matchedLetter = null;
                 const tokenSound = this.soundex(token);
                 const tokenMeta = this.metaphone(token);
@@ -415,37 +352,132 @@ class SpellingValidator {
             }
             i++;
         }
+        return resultadoSoletracao;
+    }
 
-        // =========================================================================
-        // GABARITO CANÔNICO & COMPARAÇÃO MULTINÍVEL (EXATA + FUZZY + FONÉTICA)
-        // =========================================================================
+    /**
+     * Calcula a similaridade fonética normalizada entre 0.0 (0%) e 1.0 (100%)
+     */
+    calculateSimilarity(detectedTokens, targetTokens) {
+        const maxLen = Math.max(detectedTokens.length, targetTokens.length);
+        if (maxLen === 0) return 1.0;
+
+        // Similaridade Fonética Ponderada nos Tokens (considerando matriz acústica e SPACE)
+        const weightedDist = this.weightedLevenshteinDistance(detectedTokens, targetTokens);
+        return Math.max(0, 1 - (weightedDist / maxLen));
+    }
+
+    // =========================================================================
+    // VALIDAÇÃO INTELIGENTE DE SOLETRAÇÃO (FAST TRACK + SLIDING WINDOW SCANNER)
+    // =========================================================================
+
+    /**
+     * Validação Inteligente do Spelling Bee via Busca por Substring e Janela Deslizante
+     * @param {string} transcricaoStt - Retorno bruto do STT (Deepgram)
+     * @param {string} palavraAlvo - Palavra/Frase alvo do gabarito (ex: "as tasty as", "taught")
+     * @param {Object} [options] - Opções de validação (ex: { threshold: 0.85 })
+     */
+    validate(transcricaoStt, palavraAlvo, options = {}) {
+        const threshold = typeof options.threshold === 'number' ? options.threshold : this.DEFAULT_SIMILARITY_THRESHOLD;
+
+        if (!transcricaoStt || !transcricaoStt.trim()) {
+            return {
+                isValid: false,
+                reason: 'NO_SPEECH',
+                message: 'Não conseguimos capturar sua voz. Fale próximo ao microfone.',
+                details: {}
+            };
+        }
+
+        const cleanStr = (str) => str.toLowerCase().replace(/[-–—.,!?:;"]/g, ' ').replace(/\s+/g, ' ').trim();
+        const rawText = cleanStr(transcricaoStt);
+        const target = cleanStr(palavraAlvo);
+        const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        // Auditoria pedagógica do padrão de 3 passos (Palavra Inicial + Soletração + Palavra Final)
+        const prefixRegex = new RegExp(`^${escapeRegExp(target)}(\\s+|$)`, 'i');
+        const suffixRegex = new RegExp(`(\\s+|^)${escapeRegExp(target)}$`, 'i');
+        const hasInitialWord = prefixRegex.test(rawText);
+        const hasFinalWord = suffixRegex.test(rawText);
+
+        // 1. Tokenização completa do áudio detectado e construção do gabarito canônico
+        const detectedTokens = this.tokenize(rawText);
         const gabaritoArray = this._buildGabarito(palavraAlvo);
-        const stringFinalExtraida = resultadoSoletracao.join(' - ');
-        const stringGabarito = gabaritoArray.join(' - ');
 
-        // 1. Comparação Exata (100%)
-        const exactMatch = (stringFinalExtraida === stringGabarito);
+        const gabaritoJoined = gabaritoArray.join(' ');
+        const detectedJoined = detectedTokens.join(' ');
 
-        // 2. Verificação de Requisito de Espaço para Expressões
+        let bestSimilarity = 0;
+        let matchedTokens = [];
+        let matchReason = '';
+        let isExact = false;
+
+        // 2. O CAMINHO FELIZ (Fast Track: Busca por Subarray / Substring Exato)
+        // Se a soletração perfeita está contida em qualquer lugar da fala, aprova instantaneamente com 100%!
+        if (` ${detectedJoined} `.includes(` ${gabaritoJoined} `)) {
+            bestSimilarity = 1.0;
+            isExact = true;
+            matchedTokens = [...gabaritoArray];
+            matchReason = 'FAST_TRACK_EXACT';
+        } else {
+            // 3. O CAMINHO FLEXÍVEL (Sliding Window Fuzzy Search)
+            // Desliza janelas adaptativas (L-2 a L+2) para encontrar o miolo com maior pontuação acústica
+            const targetLen = gabaritoArray.length;
+            const minWindow = Math.max(1, targetLen - 2);
+            const maxWindow = Math.min(detectedTokens.length, targetLen + 2);
+
+            for (let w = minWindow; w <= maxWindow; w++) {
+                for (let i = 0; i <= detectedTokens.length - w; i++) {
+                    const windowSlice = detectedTokens.slice(i, i + w);
+                    const sim = this.calculateSimilarity(windowSlice, gabaritoArray);
+
+                    // Prioriza janela que possui SPACE caso o gabarito exija e as notas empatem
+                    const currentHasSpace = windowSlice.includes('SPACE');
+                    const bestHasSpace = matchedTokens.includes('SPACE');
+                    const gabaritoHasSpace = gabaritoArray.includes('SPACE');
+
+                    const shouldReplace = (sim > bestSimilarity) || 
+                        (sim === bestSimilarity && gabaritoHasSpace && currentHasSpace && !bestHasSpace);
+
+                    if (shouldReplace) {
+                        bestSimilarity = sim;
+                        matchedTokens = windowSlice;
+                        matchReason = 'SLIDING_WINDOW_FUZZY';
+                    }
+                }
+            }
+
+            // Fallback de contingência caso os tokens sejam menores que targetLen - 2
+            if (matchedTokens.length === 0) {
+                bestSimilarity = this.calculateSimilarity(detectedTokens, gabaritoArray);
+                matchedTokens = detectedTokens;
+                matchReason = 'FULL_TOKENS_FALLBACK';
+            }
+        }
+
+        // 4. Verificação de Requisito de Espaço para Expressões Compostas
         const targetWords = palavraAlvo.trim().split(/\s+/);
         const hasSpaceRequirement = targetWords.length > 1;
-        const noSpaceParsed = resultadoSoletracao.filter(x => x !== 'SPACE').join('');
+
+        // Identifica se o aluno acertou todas as letras mas esqueceu de pronunciar o comando SPACE
+        const noSpaceMatched = matchedTokens.filter(x => x !== 'SPACE').join('');
         const noSpaceExpected = gabaritoArray.filter(x => x !== 'SPACE').join('');
-        const matchNoSpace = (noSpaceParsed === noSpaceExpected);
+        const matchNoSpace = (noSpaceMatched === noSpaceExpected);
+        const missingSpaceDetected = hasSpaceRequirement && !matchedTokens.includes('SPACE') && matchNoSpace;
 
-        // 3. Similaridade Fuzzy (Levenshtein Ponderado & Fonético)
-        const similarity = exactMatch ? 1.0 : this.calculateSimilarity(resultadoSoletracao, gabaritoArray);
-        const meetsThreshold = similarity >= threshold;
+        const meetsThreshold = bestSimilarity >= threshold;
+        const stringFinalExtraida = matchedTokens.join(' - ');
+        const stringGabarito = gabaritoArray.join(' - ');
 
-        let isValid = exactMatch || (meetsThreshold && !(hasSpaceRequirement && !resultadoSoletracao.includes('SPACE') && matchNoSpace));
-        let isFullyCompliant = exactMatch && hasInitialWord && hasFinalWord;
+        let isValid = isExact || (meetsThreshold && !missingSpaceDetected);
+        let isFullyCompliant = isExact && hasInitialWord && hasFinalWord;
         let message = '';
         let type = 'success';
 
-        // Geração do Feedback Pedagógico
+        // 5. Geração de Feedback Pedagógico Preciso
         if (isFullyCompliant) {
             message = `🎉 Perfeito! Executou os 3 passos rigorosamente: Palavra ➔ Soletração ➔ Palavra!`;
-        } else if (exactMatch) {
+        } else if (isExact) {
             if (!hasInitialWord && !hasFinalWord) {
                 message = `✅ Soletração perfeita! Lembre-se de falar a palavra no início e no final.`;
             } else if (!hasInitialWord) {
@@ -453,14 +485,14 @@ class SpellingValidator {
             } else {
                 message = `✅ Soletração perfeita! Lembre-se de repetir a palavra ao finalizar.`;
             }
-        } else if (hasSpaceRequirement && !resultadoSoletracao.includes('SPACE') && (matchNoSpace || similarity >= threshold)) {
+        } else if (missingSpaceDetected) {
             isValid = false;
             type = 'error';
             message = `⚠️ Você esqueceu de falar "SPACE" para separar as palavras da expressão!`;
         } else if (meetsThreshold) {
             isValid = true;
             type = 'success';
-            const pct = Math.round(similarity * 100);
+            const pct = Math.round(bestSimilarity * 100);
             message = `✅ Excelente! Soletração aprovada por similaridade fonética (${pct}%).`;
             if (!hasInitialWord || !hasFinalWord) {
                 message += ` Lembre-se do padrão de 3 passos (Palavra ➔ Soletração ➔ Palavra).`;
@@ -468,23 +500,24 @@ class SpellingValidator {
         } else {
             isValid = false;
             type = 'error';
-            const pct = Math.round(similarity * 100);
+            const pct = Math.round(bestSimilarity * 100);
             message = `❌ Erro na soletração (Similaridade: ${pct}%). Esperado: [${stringGabarito}]`;
         }
 
         return {
             isValid: isValid,
             isFullyCompliant: isFullyCompliant,
-            similarity: similarity,
+            similarity: bestSimilarity,
             type: type,
             message: message,
             details: {
                 hasInitialWord,
                 hasFinalWord,
-                similarity,
+                similarity: bestSimilarity,
+                matchReason,
                 textoOriginal: rawText,
-                mioloIdentificado: miolo,
-                arrayLetras: resultadoSoletracao,
+                arrayLetrasDetectadas: detectedTokens,
+                arrayLetrasCasadas: matchedTokens,
                 stringFinal: stringFinalExtraida,
                 stringGabarito: stringGabarito
             }

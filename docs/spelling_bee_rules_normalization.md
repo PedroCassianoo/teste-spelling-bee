@@ -61,54 +61,40 @@ As APIs de STT (como Deepgram) utilizam modelos de linguagem que tendem a força
 
 ---
 
-## 3. Lógica de Validação e Isolamento (Regra de Negócio)
+## 3. Lógica de Validação Definitiva: Busca por Substring & Janela Deslizante (Sliding Window)
 
-Para resolver o conflito entre a palavra alvo (ex: *"as"*) e a letra isolada (ex: letra *"S"* transcrita como *"as"*), a validação não deve ser feita de forma linear em toda a string. O backend deve processar a transcrição em 3 etapas de isolamento:
+Para um briefing de centenas ou milhares de palavras, tentar recortar e limpar perfeitamente as bordas com Regex falha quando a API de STT sofre pequenas distorções no início ou no fim da fala (ex: *"s a a s ... s a s"*).
 
-**Passo 1: Recorte das Extremidades (Trim Target)**
-O sistema identifica a frase transcrita e remove a primeira e a última menção da frase alvo, que representam a pronúncia inicial e final da regra do Spelling Bee.
-- *Transcrição Bruta:* `"as tasty as a as space tea a as tea why space a as as tasty as"`
-- *Isolamento:* Remove o primeiro e último `"as tasty as"`.
+A arquitetura oficial adota o princípio do **Scanner Inteligente**:
+O sistema atua como um scanner procurando a sequência correta escondida dentro de todo o áudio capturado.
 
-**Passo 2: Aplicação do Dicionário no Miolo (Parsing)**
-O que sobra é estritamente o bloco de soletração. O sistema aplica o "De-Para" da Tabela 2 termo a termo neste miolo:
-- `"a"` -> `A`
-- `"as"` -> `S`
-- `"space"` -> `SPACE`
-- `"tea"` -> `T`
-- `"a"` -> `A`
-- `"as"` -> `S`
-- `"tea"` -> `T`
-- `"why"` -> `Y`
-- `"space"` -> `SPACE`
-- `"a"` -> `A`
-- `"as"` -> `S`
-
-**Passo 3: Comparação de Gabarito**
-Com o bloco de soletração higienizado (`A S SPACE T A S T Y SPACE A S`), o sistema compara diretamente com a *string* correta salva no banco de dados. Qualquer divergência percentual mínima (ou falha completa) aciona o erro, conforme as configurações de tolerância do aplicativo.
+```
+Texto Bruto ➔ Tokenização Fonética Completa ➔ Fast Track (includes) ➔ Sliding Window Fuzzy Scanner ➔ Veredito & Feedback
+```
 
 ---
 
-## 4. Ordem de Processamento Obrigatória (Pipeline de Higienização)
+## 4. Pipeline de Execução em 5 Etapas
 
-**O Problema (Vazamento do Alvo):** Se as regras de separação de letras e o dicionário fonético forem aplicados à string inteira, o sistema destruirá a pronúncia inicial e final da palavra alvo. Por exemplo, na frase "as tasty as", o termo "as" será transformado na letra "S" e "tasty" será soletrado indevidamente pelo sistema (gerando falsos erros como `S - T - A - S - T - Y - S`).
+### Passo 1: Tokenização Fonética Completa
+Toda a string capturada pelo STT é convertida em uma sequência contínua de tokens fonéticos utilizando o Dicionário De-Para, tratamento de compostos (`W`, `DOUBLE <LETRA>`) e fallback com Soundex / Metaphone.
 
-**A Regra (Strict Execution Pipeline):** O backend/frontend deve **obrigatoriamente** processar a string de retorno da API seguindo esta ordem cronológica exata:
+### Passo 2: O Caminho Feliz (Fast Track / Substring Exata)
+O sistema verifica se a sequência exata de tokens do gabarito está contida de forma contígua em qualquer lugar da cadeia detectada:
+- `if (" " + detectedTokens.join(" ") + " ").includes(" " + gabaritoTokens.join(" ") + " ")`
+- Se positivo, aprova instantaneamente com **100% de similaridade**, eliminando custo computacional e ruídos nas bordas.
 
-### Passo 1: Captura e Padronização Inicial
-- Receber a string bruta do STT.
-- Converter tudo para letras minúsculas (lowercase) e remover pontuações extras para facilitar a busca.
-- *Exemplo de entrada:* `"as tasty as a as space tea a as tea why space a as as tasty as"`
+### Passo 3: O Caminho Flexível (Sliding Window Fuzzy Search)
+Caso a API tenha tido 1 erro acústico de letra ou o aluno tenha feito uma leve hesitação:
+- Desliza janelas de tamanho elástico ($L-2$ até $L+2$) pela cadeia de tokens detectados.
+- Calcula a Distância de Levenshtein Ponderada Foneticamente (com Matriz de Confusão Acústica: B/V, M/N, T/D, S/C, etc.) para cada janela.
+- Seleciona o trecho com a maior pontuação acústica.
 
-### Passo 2: Extração das Bordas (Trim Target) ANTES de qualquer modificação
-- O sistema deve buscar a palavra/frase alvo (gabarito) no **início (prefixo)** e no **final (sufixo)** da string e removê-las.
-- *Lógica recomendada (Regex):* Substituir `^as tasty as` (início) e `as tasty as$` (fim) por um espaço vazio.
-- *Resultado após Passo 2:* `" a as space tea a as tea why space a as "`
+### Passo 4: Verificação Pedagógica de `SPACE`
+Em termos compostos ou expressões (ex: *"as tasty as"*, *"more slowly"*):
+- Se o miolo identificado corresponde a todas as letras da expressão mas o comando `SPACE` não foi pronunciado, o sistema emite feedback pedagógico específico:
+  `⚠️ Você esqueceu de falar "SPACE" para separar as palavras da expressão!`
 
-### Passo 3: Isolamento da Área de Soletração (Miolo)
-- O que sobra da string após o Passo 2 é classificado como o "Miolo de Soletração".
-- É estritamente proibido aplicar o dicionário fora desta área.
+### Passo 5: Auditoria dos 3 Passos (Palavra ➔ Soletração ➔ Palavra)
+O sistema analisa se a palavra alvo foi dita no início e no final para conceder a certificação de cumprimento rigoroso dos 3 passos, incentivando a prática pedagógica ideal sem penalizar a nota da soletração quando esta estiver correta.
 
-### Passo 4: Aplicação do Dicionário e Split
-- **Somente agora** o sistema aplica a tabela "De-Para" (Ex: converte `"as"` para `S`, `"space"` para `SPACE`, `"double" + "tea"` para `TT`).
-- Compara a string final gerada com o gabarito de soletração do banco de dados.
