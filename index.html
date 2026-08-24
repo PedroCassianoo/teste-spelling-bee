@@ -113,8 +113,8 @@
         
         <div id="progress-indicator" class="font-headline-md text-headline-md text-primary font-bold tracking-tight">1 / 10</div>
 
-        <!-- Botão de Configurações da API Deepgram -->
-        <button id="btn-settings" aria-label="Configurar Deepgram" class="text-primary hover:opacity-80 transition-opacity duration-200 flex items-center justify-center p-sm rounded-full active:bg-surface-variant focus:outline-none focus:ring-1 focus:ring-primary relative cursor-pointer">
+        <!-- Botão de Configurações da API Deepgram & Supabase -->
+        <button id="btn-settings" aria-label="Configurações" class="text-primary hover:opacity-80 transition-opacity duration-200 flex items-center justify-center p-sm rounded-full active:bg-surface-variant focus:outline-none focus:ring-1 focus:ring-primary relative cursor-pointer">
             <span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 0;">settings</span>
             <span id="key-status-badge" class="w-2 h-2 rounded-full bg-yellow-400 absolute top-1 right-1"></span>
         </button>
@@ -159,28 +159,31 @@
         </div>
     </footer>
 
-    <!-- Modal de Configuração da Chave Deepgram -->
+    <!-- Modal de Configuração -->
     <div id="settings-modal" class="hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-50 items-center justify-center p-4">
         <div class="bg-surface-container border border-outline-variant w-full max-w-md rounded-2xl p-6 shadow-2xl space-y-5">
             <div class="flex justify-between items-center">
-                <h3 class="font-headline-md text-headline-md text-primary font-bold">API Deepgram</h3>
+                <h3 class="font-headline-md text-headline-md text-primary font-bold">Configurações</h3>
                 <button id="btn-close-modal" class="text-on-surface-variant hover:text-primary transition-colors cursor-pointer">
                     <span class="material-symbols-outlined">close</span>
                 </button>
             </div>
-            
-            <p class="text-sm text-on-surface-variant leading-relaxed">
-                Insira sua chave de API da <strong>Deepgram</strong> para habilitar o TTS ultrarrealista (botão Ouvir) e o reconhecimento de voz STT Nova-2 (botão Microfone).
-            </p>
 
+            <!-- Deepgram Key -->
             <div class="space-y-2">
-                <label for="api-key-input" class="text-xs uppercase tracking-wider font-semibold text-on-surface">Chave da API (Token):</label>
+                <label for="api-key-input" class="text-xs uppercase tracking-wider font-semibold text-on-surface">Chave Deepgram (TTS & STT):</label>
                 <input id="api-key-input" type="password" placeholder="Ex: 8a7b9c..." class="w-full bg-surface-container-lowest border border-outline rounded-xl px-4 py-3 text-primary text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary">
+            </div>
+
+            <!-- Supabase Anon Key -->
+            <div class="space-y-2">
+                <label for="supabase-key-input" class="text-xs uppercase tracking-wider font-semibold text-on-surface">Supabase Anon Key (Opcional):</label>
+                <input id="supabase-key-input" type="password" placeholder="Chave pública do Supabase" class="w-full bg-surface-container-lowest border border-outline rounded-xl px-4 py-3 text-primary text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary">
             </div>
 
             <div class="pt-2 flex space-x-3">
                 <button id="btn-save-key" class="flex-1 bg-primary text-background font-semibold py-3 rounded-full hover:bg-opacity-90 transition-all cursor-pointer">
-                    Salvar Chave
+                    Salvar Configurações
                 </button>
             </div>
         </div>

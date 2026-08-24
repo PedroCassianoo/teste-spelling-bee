@@ -11,7 +11,7 @@ class SpellingBeeApp {
 
         this.initElements();
         this.attachEvents();
-        this.renderWord();
+        this.initDatabaseAndRender();
         this.checkApiKeyBadge();
     }
 
@@ -32,6 +32,7 @@ class SpellingBeeApp {
         this.btnSaveKey = document.getElementById('btn-save-key');
         this.btnCloseModal = document.getElementById('btn-close-modal');
         this.apiKeyInput = document.getElementById('api-key-input');
+        this.supabaseKeyInput = document.getElementById('supabase-key-input');
         this.keyStatusBadge = document.getElementById('key-status-badge');
     }
 
@@ -57,8 +58,39 @@ class SpellingBeeApp {
         });
     }
 
+    async initDatabaseAndRender() {
+        await this.loadWordsFromSupabase();
+        this.renderWord();
+    }
+
+    async loadWordsFromSupabase() {
+        const supabaseUrl = window.CONFIG.SUPABASE_URL;
+        const supabaseKey = window.CONFIG.getSupabaseKey();
+
+        if (supabaseUrl && supabaseKey) {
+            try {
+                const response = await fetch(`${supabaseUrl}/rest/v1/spelling_bee_words?select=*&order=display_order.asc`, {
+                    headers: {
+                        'apikey': supabaseKey,
+                        'Authorization': `Bearer ${supabaseKey}`
+                    }
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (Array.isArray(data) && data.length > 0) {
+                        this.words = data;
+                        console.log("[Supabase] Palavras carregadas do banco remoto:", this.words);
+                    }
+                }
+            } catch (err) {
+                console.warn("[Supabase] Falha ao carregar do Supabase remoto, usando banco local.", err);
+            }
+        }
+    }
+
     getCurrentWord() {
-        return this.words[this.currentIndex] || { word: "HELLO", translation: "Olá" };
+        return this.words[this.currentIndex] || { id: 1, word: "as tasty as", spelling: "a-s [space] t-a-s-t-y [space] a-s", full_phrase: "as tasty as" };
     }
 
     renderWord() {
@@ -111,7 +143,6 @@ class SpellingBeeApp {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             this.audioChunks = [];
             
-            // Preferência por mimeType compatível
             const options = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
                 ? { mimeType: 'audio/webm;codecs=opus' }
                 : (MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : {});
@@ -126,7 +157,6 @@ class SpellingBeeApp {
 
             this.mediaRecorder.onstop = async () => {
                 const audioBlob = new Blob(this.audioChunks, { type: this.mediaRecorder.mimeType || 'audio/webm' });
-                // Desliga as faixas de áudio do microfone
                 stream.getTracks().forEach(track => track.stop());
                 await this.processAudio(audioBlob);
             };
@@ -180,32 +210,40 @@ class SpellingBeeApp {
     }
 
     /**
-     * Valida a transcrição recebida em relação à palavra esperada
+     * Valida a transcrição recebida em relação à palavra/frase esperada
      */
     validateSpelling(userTranscript) {
         const current = this.getCurrentWord();
-        const expected = current.word.trim().toUpperCase();
-        
-        // Limpeza e normalização do que foi falado
-        // Pode vir soletrado com espaços "K N O W L E D G E" ou a palavra direta "KNOWLEDGE"
-        const cleanSpoken = userTranscript.replace(/[^a-zA-Z]/g, '').toUpperCase();
-        const expectedClean = expected.replace(/[^a-zA-Z]/g, '').toUpperCase();
+        const expected = current.word.trim().toLowerCase();
+        const spoken = userTranscript.trim().toLowerCase();
 
-        const isMatch = (cleanSpoken === expectedClean) || (userTranscript.toUpperCase().includes(expectedClean));
+        // Normalização: remove pontuações e múltiplos espaços
+        const normalize = (str) => str.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+        
+        const normSpoken = normalize(spoken);
+        const normExpected = normalize(expected);
+
+        // Remove todos os espaços para comparar caso tenha sido soletrado letra a letra
+        const noSpaceSpoken = normSpoken.replace(/\s+/g, '');
+        const noSpaceExpected = normExpected.replace(/\s+/g, '');
+
+        const isMatch = (normSpoken === normExpected) || 
+                        (noSpaceSpoken === noSpaceExpected) || 
+                        normSpoken.includes(normExpected) ||
+                        noSpaceSpoken.includes(noSpaceExpected);
 
         if (isMatch) {
             this.handleSuccess(userTranscript);
         } else {
-            this.handleError(userTranscript, expected);
+            this.handleError(userTranscript, current.word);
         }
     }
 
     handleSuccess(transcript) {
         this.isCompleted = true;
         this.setMicState('success');
-        this.showFeedback(`Excelente! Você disse: "${transcript}". Pronúncia correta!`, "success");
+        this.showFeedback(`Excelente! Identificado: "${transcript}". Correto!`, "success");
         
-        // Efeito visual no botão de próximo
         this.btnNext.classList.add('animate-pulse');
         setTimeout(() => this.btnNext.classList.remove('animate-pulse'), 2000);
     }
@@ -214,11 +252,10 @@ class SpellingBeeApp {
         this.isCompleted = false;
         this.setMicState('idle');
         this.triggerShake();
-        this.showFeedback(`Identificado: "${transcript}". Esperado: "${expected}". Tente novamente!`, "error");
+        this.showFeedback(`Ouvido: "${transcript}". Esperado: "${expected}". Tente novamente!`, "error");
     }
 
     setMicState(state) {
-        // idle, recording, processing, success
         this.btnMic.classList.remove('animate-pulse-ring', 'animate-glow-success', 'bg-primary', 'text-background', 'border-red-500');
 
         switch (state) {
@@ -293,6 +330,9 @@ class SpellingBeeApp {
     // Modal de Configurações
     openSettingsModal() {
         this.apiKeyInput.value = window.CONFIG.getApiKey();
+        if (this.supabaseKeyInput) {
+            this.supabaseKeyInput.value = window.CONFIG.getSupabaseKey();
+        }
         this.settingsModal.classList.remove('hidden');
         this.settingsModal.classList.add('flex');
     }
@@ -303,21 +343,28 @@ class SpellingBeeApp {
     }
 
     saveApiKey() {
-        const key = this.apiKeyInput.value.trim();
-        window.CONFIG.setApiKey(key);
+        const deepgramKey = this.apiKeyInput.value.trim();
+        window.CONFIG.setApiKey(deepgramKey);
+
+        if (this.supabaseKeyInput) {
+            const supabaseKey = this.supabaseKeyInput.value.trim();
+            window.CONFIG.setSupabaseKey(supabaseKey);
+        }
+
         this.checkApiKeyBadge();
         this.closeSettingsModal();
-        this.showFeedback(key ? "Chave Deepgram salva com sucesso!" : "Chave removida.", "success");
+        this.showFeedback("Configurações salvas com sucesso!", "success");
+        this.loadWordsFromSupabase();
     }
 
     checkApiKeyBadge() {
         if (!this.keyStatusBadge) return;
         const hasKey = window.CONFIG.hasApiKey();
         if (hasKey) {
-            this.keyStatusBadge.className = "w-2 h-2 rounded-full bg-green-400 inline-block";
+            this.keyStatusBadge.className = "w-2 h-2 rounded-full bg-green-400 absolute top-1 right-1";
             this.keyStatusBadge.title = "Deepgram API Conectada";
         } else {
-            this.keyStatusBadge.className = "w-2 h-2 rounded-full bg-yellow-400 inline-block animate-ping";
+            this.keyStatusBadge.className = "w-2 h-2 rounded-full bg-yellow-400 absolute top-1 right-1 animate-ping";
             this.keyStatusBadge.title = "Chave Deepgram Pendente";
         }
     }
