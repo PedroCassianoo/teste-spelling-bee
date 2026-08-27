@@ -2,100 +2,214 @@
  * Motor de Validação Fonética e Fuzzy Matching do Spelling Bee
  * 
  * Integra:
- * 1. Pipeline estrito de 4 passos com isolamento de bordas via Regex (Trim Target).
- * 2. Algoritmo de Distância de Levenshtein (Fuzzy Matching com threshold de 85%).
- * 3. Validação Fonética (Soundex, Metaphone e Matriz de Confusão Acústica).
+ * 1. Dicionário Fonético Base (Letras, Dígitos 0-9, Comandos, Fusões de Bigramas e Matriz Acústica).
+ * 2. Pipeline estrito de 3 passos com fatiamento por âncora (Palavra ➔ Soletração ➔ Palavra).
+ * 3. Algoritmo de Distância de Levenshtein Ponderado Foneticamente (Threshold de 85% no miolo, 70% nas bordas).
+ * 4. Resolução inteligente de hipóteses de alinhamento para fusões acidentais do STT (AS, IN, OF).
  */
 
+const DEFAULT_PHONETIC_DICTIONARY = {
+  "_meta": {
+    "versao": "1.0",
+    "fase": "1 - Dicionário Base",
+    "fonte_primaria": "logs_deepgram_stt_analise.md (28 amostras reais, 5 categorias de variação)",
+    "sotaque": "não tratado nesta fase, conforme decisão do projeto",
+    "granularidade": "letra por letra - a validação monta a combinação da palavra em tempo real a partir deste dicionário"
+  },
+  "letters": {
+    "A": ["a", "ay", "ah", "aye", "eight", "ei", "eigh", "hey"],
+    "B": ["b", "be", "bee"],
+    "C": ["c", "see", "sea", "si", "ce"],
+    "D": ["d", "dee", "de", "di", "thee"],
+    "E": ["e", "ee", "i", "he", "ea"],
+    "F": ["f", "ef", "eff", "if", "half", "off"],
+    "G": ["g", "gee", "jee", "ji", "gi"],
+    "H": ["h", "aitch", "age", "eight", "each", "edge", "eitch", "ach", "hache", "etch"],
+    "I": ["i", "eye", "aye", "ai", "ah"],
+    "J": ["j", "jay", "hey", "joy", "jei"],
+    "K": ["k", "kay", "ok", "kei", "ca"],
+    "L": ["l", "el", "ell", "hell", "al"],
+    "M": ["m", "em", "am"],
+    "N": ["n", "en", "an", "and", "in", "un"],
+    "O": ["o", "oh", "owe", "zero", "ou", "or"],
+    "P": ["p", "pee", "pea", "pe", "pi"],
+    "Q": ["q", "cue", "queue", "cute", "kyu"],
+    "R": ["r", "are", "our", "ar", "er"],
+    "S": ["s", "as", "is", "yes", "ass", "es", "us", "ess"],
+    "T": ["t", "tea", "tee", "ti", "to"],
+    "U": ["u", "you", "yu", "ew"],
+    "V": ["v", "vee", "ve", "vi"],
+    "W": ["w", "double you", "double u", "double-u", "doubleyou", "dabliu"],
+    "X": ["x", "ex", "axe", "ax"],
+    "Y": ["y", "why", "wai", "uai", "wire"],
+    "Z": ["z", "zee", "zed", "set", "zi"]
+  },
+  "digits": {
+    "0": ["0", "zero", "oh"],
+    "1": ["1", "one", "won"],
+    "2": ["2", "two", "too", "to"],
+    "3": ["3", "three"],
+    "4": ["4", "four", "for"],
+    "5": ["5", "five"],
+    "6": ["6", "six"],
+    "7": ["7", "seven"],
+    "8": ["8", "eight", "ate"],
+    "9": ["9", "nine"]
+  },
+  "commands": {
+    "SPACE": ["space", "spice", "pace", "base", "spay", "place", "places", "blank"],
+    "DOUBLE": ["double", "buble", "bubble", "dabble", "bobble", "2", "two"]
+  },
+  "bigram_fusions": {
+    "_descricao": "Sequências de duas letras que o Deepgram funde em uma palavra real de uma vez só.",
+    "AS": ["as"],
+    "IN": ["in"],
+    "OF": ["of"]
+  },
+  "acoustic_confusions": {
+    "_descricao": "Trocas fonéticas próximas por qualidade de microfone ou sotaque.",
+    "M": ["N"],
+    "N": ["M"],
+    "B": ["V", "P"],
+    "D": ["T"]
+  }
+};
+
 class SpellingValidator {
-    constructor() {
-        // =========================================================================
-        // DICIONÁRIO OFICIAL DE NORMALIZAÇÃO FONÉTICA (DE-PARA)
-        // =========================================================================
-        this.DICIONARIO = {
-            // A
-            'a': 'A', 'ah': 'A', 'aye': 'A', 'eight': 'A', 'ay': 'A', 'ei': 'A', 'eigh': 'A', 'hey': 'A',
-            // B
-            'be': 'B', 'bee': 'B', 'b': 'B',
-            // C
-            'see': 'C', 'sea': 'C', 'si': 'C', 'c': 'C', 'ce': 'C',
-            // D
-            'de': 'D', 'di': 'D', 'thee': 'D', 'd': 'D', 'dee': 'D',
-            // E
-            'i': 'E', 'he': 'E', 'e': 'E', 'ee': 'E', 'ea': 'E',
-            // F
-            'ef': 'F', 'half': 'F', 'if': 'F', 'f': 'F', 'eff': 'F', 'off': 'F',
-            // G
-            'jee': 'G', 'gee': 'G', 'g': 'G', 'ji': 'G', 'gi': 'G',
-            // H
-            'aitch': 'H', 'age': 'H', 'eight': 'H', 'h': 'H', 'ach': 'H', 'eitch': 'H', 'hache': 'H', 'each': 'H', 'edge': 'H', 'etch': 'H',
-            // I
-            'eye': 'I', 'aye': 'I', 'ah': 'I', 'i': 'I', 'ai': 'I',
-            // J
-            'jay': 'J', 'hey': 'J', 'j': 'J', 'jei': 'J', 'joy': 'J',
-            // K
-            'kay': 'K', 'ok': 'K', 'k': 'K', 'kei': 'K', 'ca': 'K',
-            // L
-            'el': 'L', 'hell': 'L', 'l': 'L', 'ell': 'L', 'al': 'L',
-            // M
-            'em': 'M', 'am': 'M', 'm': 'M',
-            // N
-            'en': 'N', 'an': 'N', 'and': 'N', 'in': 'N', 'n': 'N', 'un': 'N',
-            // O
-            'oh': 'O', 'owe': 'O', 'zero': 'O', 'o': 'O', 'ou': 'O', 'or': 'O',
-            // P
-            'pe': 'P', 'pee': 'P', 'pea': 'P', 'p': 'P', 'pi': 'P',
-            // Q
-            'queue': 'Q', 'cue': 'Q', 'q': 'Q', 'kyu': 'Q', 'cute': 'Q',
-            // R
-            'are': 'R', 'our': 'R', 'ar': 'R', 'r': 'R', 'er': 'R',
-            // S (Confusões críticas resolvidas pelo isolamento do miolo)
-            'as': 'S', 'is': 'S', 'yes': 'S', 'ass': 'S', 'es': 'S', 's': 'S', 'ess': 'S', 'us': 'S',
-            // T
-            'tea': 'T', 'tee': 'T', 'ti': 'T', 't': 'T', 'to': 'T',
-            // U
-            'you': 'U', 'yu': 'U', 'u': 'U', 'ew': 'U',
-            // V
-            've': 'V', 'vee': 'V', 'v': 'V', 'vi': 'V',
-            // W
-            'double you': 'W', 'double u': 'W', 'double-u': 'W', 'doubleyou': 'W', 'w': 'W', 'dabliu': 'W',
-            // X
-            'ex': 'X', 'axe': 'X', 'x': 'X', 'ax': 'X',
-            // Y
-            'why': 'Y', 'wai': 'Y', 'y': 'Y', 'uai': 'Y', 'wire': 'Y',
-            // Z
-            'zee': 'Z', 'zed': 'Z', 'z': 'Z', 'zi': 'Z', 'set': 'Z',
-
-            // Comandos Especiais
-            'space': 'SPACE', 'pace': 'SPACE', 'spice': 'SPACE', 'base': 'SPACE', 'spay': 'SPACE', 'blank': 'SPACE', 'place': 'SPACE', 'places': 'SPACE',
-            'double': 'DOUBLE', 'buble': 'DOUBLE', 'dabble': 'DOUBLE', 'bobble': 'DOUBLE', '2': 'DOUBLE', 'two': 'DOUBLE'
-        };
-
-        // Nomes canônicos falados de cada letra em inglês para análise fonética
+    constructor(customDictionary = null) {
+        // Nomes canônicos falados de cada letra em inglês para análise fonética secundária (Soundex/Metaphone)
         this.LETTER_SPOKEN_NAMES = {
             'A': 'ay', 'B': 'bee', 'C': 'see', 'D': 'dee', 'E': 'ee',
             'F': 'eff', 'G': 'gee', 'H': 'aitch', 'I': 'eye', 'J': 'jay',
             'K': 'kay', 'L': 'ell', 'M': 'em', 'N': 'en', 'O': 'oh',
             'P': 'pee', 'Q': 'cue', 'R': 'ar', 'S': 'ess', 'T': 'tee',
             'U': 'you', 'V': 'vee', 'W': 'double you', 'X': 'ex', 'Y': 'why', 'Z': 'zee',
-            'SPACE': 'space', 'DOUBLE': 'double'
+            'SPACE': 'space', 'DOUBLE': 'double',
+            '0': 'zero', '1': 'one', '2': 'two', '3': 'three', '4': 'four',
+            '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
         };
 
-        // Matriz de Pares Acusticamente Confundíveis (Custo reduzido em substituição)
+        this.DEFAULT_SIMILARITY_THRESHOLD = 0.85; // 85% de similaridade mínima para aprovação no miolo
+        this.DEFAULT_EDGE_THRESHOLD = 0.70;       // 70% de similaridade mínima para prefixo e sufixo
+
+        this.loadDictionary(customDictionary || DEFAULT_PHONETIC_DICTIONARY);
+    }
+
+    /**
+     * Compila e carrega os mapeamentos a partir de um objeto de dicionário estruturado
+     * @param {Object} dictData - Objeto seguindo a estrutura do dicionario_fonetico_base.json
+     */
+    loadDictionary(dictData) {
+        if (!dictData || typeof dictData !== 'object') {
+            dictData = DEFAULT_PHONETIC_DICTIONARY;
+        }
+
+        this.dicionarioData = dictData;
+        this.DICIONARIO = {};
+        this.BIGRAM_FUSIONS = {};
         this.ACOUSTIC_CONFUSIONS = new Set([
             'H-A', 'A-H',
-            'M-N', 'N-M',
-            'B-V', 'V-B', 'B-P', 'P-B', 'V-P', 'P-V',
-            'T-D', 'D-T',
             'S-C', 'C-S', 'S-Z', 'Z-S', 'C-Z', 'Z-C',
             'K-Q', 'Q-K',
             'G-J', 'J-G',
             'F-S', 'S-F', 'F-V', 'V-F',
             'E-I', 'I-E',
-            'U-O', 'O-U', 'U-W', 'W-U'
+            'U-O', 'O-U', 'U-W', 'W-U',
+            // Homófonos compartilhados entre dígitos e letras
+            '8-A', 'A-8', '8-H', 'H-8',
+            '2-T', 'T-2',
+            '0-O', 'O-0',
+            '4-F', 'F-4'
         ]);
 
-        this.DEFAULT_SIMILARITY_THRESHOLD = 0.85; // 85% de similaridade mínima para aprovação
+        // 1. Mapeamento das 26 Letras
+        if (dictData.letters) {
+            for (const [letter, variations] of Object.entries(dictData.letters)) {
+                const upperLetter = letter.toUpperCase();
+                // O próprio caractere é mapeado
+                this.DICIONARIO[upperLetter.toLowerCase()] = upperLetter;
+                if (Array.isArray(variations)) {
+                    for (const v of variations) {
+                        this.DICIONARIO[v.toLowerCase().trim()] = upperLetter;
+                    }
+                }
+            }
+        }
+
+        // 2. Mapeamento dos Dígitos (0-9)
+        if (dictData.digits) {
+            for (const [digit, variations] of Object.entries(dictData.digits)) {
+                const digitStr = String(digit).trim();
+                this.DICIONARIO[digitStr] = digitStr;
+                if (Array.isArray(variations)) {
+                    for (const v of variations) {
+                        this.DICIONARIO[v.toLowerCase().trim()] = digitStr;
+                    }
+                }
+            }
+        }
+
+        // 3. Mapeamento dos Comandos (SPACE, DOUBLE)
+        if (dictData.commands) {
+            for (const [cmd, variations] of Object.entries(dictData.commands)) {
+                const upperCmd = cmd.toUpperCase();
+                this.DICIONARIO[upperCmd.toLowerCase()] = upperCmd;
+                if (Array.isArray(variations)) {
+                    for (const v of variations) {
+                        this.DICIONARIO[v.toLowerCase().trim()] = upperCmd;
+                    }
+                }
+            }
+        }
+
+        // 4. Mapeamento de Fusões de Bigramas (AS, IN, OF)
+        if (dictData.bigram_fusions) {
+            for (const [bigram, variations] of Object.entries(dictData.bigram_fusions)) {
+                if (bigram.startsWith('_')) continue;
+                const tokenArray = bigram.split('').map(c => c.toUpperCase());
+                if (Array.isArray(variations)) {
+                    for (const v of variations) {
+                        this.BIGRAM_FUSIONS[v.toLowerCase().trim()] = tokenArray;
+                    }
+                }
+            }
+        }
+
+        // 5. Matriz de Confusão Acústica
+        if (dictData.acoustic_confusions) {
+            for (const [char1, confusionList] of Object.entries(dictData.acoustic_confusions)) {
+                if (char1.startsWith('_')) continue;
+                const c1 = char1.toUpperCase();
+                if (Array.isArray(confusionList)) {
+                    for (const c2Item of confusionList) {
+                        const c2 = c2Item.toUpperCase();
+                        this.ACOUSTIC_CONFUSIONS.add(`${c1}-${c2}`);
+                        this.ACOUSTIC_CONFUSIONS.add(`${c2}-${c1}`);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Carrega o arquivo JSON do dicionário fonético de forma assíncrona
+     * @param {string} url - Caminho ou URL do JSON
+     */
+    async loadFromUrl(url = 'dicionario_fonetico_base.json') {
+        if (typeof fetch === 'function') {
+            try {
+                const resp = await fetch(url);
+                if (resp.ok) {
+                    const data = await resp.json();
+                    this.loadDictionary(data);
+                    console.log("[SpellingValidator] Dicionário fonético carregado de:", url);
+                    return true;
+                }
+            } catch (err) {
+                console.warn("[SpellingValidator] Não foi possível carregar de", url, "- utilizando dicionário padrão.", err.message);
+            }
+        }
+        return false;
     }
 
     // =========================================================================
@@ -104,7 +218,6 @@ class SpellingValidator {
 
     /**
      * Algoritmo Soundex para palavras em inglês
-     * Converte uma palavra em código fonético de 4 caracteres (ex: A320)
      */
     soundex(word) {
         if (!word || typeof word !== 'string') return '';
@@ -148,7 +261,6 @@ class SpellingValidator {
         let str = word.toLowerCase().replace(/[^a-z]/g, '');
         if (!str) return '';
 
-        // Simplificação inicial
         if (str.startsWith('kn') || str.startsWith('gn') || str.startsWith('pn') || str.startsWith('ps') || str.startsWith('wr')) {
             str = str.slice(1);
         }
@@ -159,7 +271,7 @@ class SpellingValidator {
             const next = str[i + 1] || '';
             const prev = str[i - 1] || '';
 
-            if (c === 'b' && i === str.length - 1 && prev === 'm') continue; // silent B in dumb
+            if (c === 'b' && i === str.length - 1 && prev === 'm') continue;
             if (c === 'c') {
                 if (next === 'h') { meta += 'X'; i++; continue; }
                 if ('eiy'.includes(next)) { meta += 'S'; continue; }
@@ -204,15 +316,15 @@ class SpellingValidator {
     // =========================================================================
 
     /**
-     * Calcula o custo de substituição acústica entre dois tokens de letras
+     * Calcula o custo de substituição acústica entre dois tokens
      */
     _getAcousticSubstitutionCost(t1, t2) {
         if (t1 === t2) return 0.0;
         
-        // Se ambos são letras e formam par de confusão acústica clássica
+        // Se ambos formam par de confusão acústica na matriz
         const pair = `${t1}-${t2}`;
         if (this.ACOUSTIC_CONFUSIONS.has(pair)) {
-            return 0.2; // Penalidade mínima para gêmeos acústicos (H vs A, M vs N, etc.)
+            return 0.2; // Custo reduzido para gêmeos acústicos (H vs A, M vs N, B vs V, D vs T, etc.)
         }
 
         // Se os nomes fonéticos falados possuem mesmo Soundex ou Metaphone
@@ -227,9 +339,6 @@ class SpellingValidator {
 
     /**
      * Calcula a Distância de Levenshtein Ponderada Foneticamente entre arrays de tokens
-     * @param {Array<string>} detected 
-     * @param {Array<string>} target 
-     * @returns {number} Distância de edição ponderada
      */
     weightedLevenshteinDistance(detected, target) {
         const m = detected.length;
@@ -292,9 +401,6 @@ class SpellingValidator {
 
     /**
      * Calcula similaridade de Levenshtein entre duas strings de palavras completas
-     * @param {string} str1 
-     * @param {string} str2 
-     * @returns {number} Similaridade de 0.0 a 1.0
      */
     calculateWordSimilarity(str1, str2) {
         if (!str1 || !str2) return 0;
@@ -314,9 +420,10 @@ class SpellingValidator {
     /**
      * Tokeniza rastreando os índices de origem em rawWords e diferenciando palavras inteiras de letras
      * @param {string} rawText 
+     * @param {Object} [options] - Opções de tokenização (ex: expandBigrams)
      * @returns {{ rawWords: Array<string>, tokens: Array<string>, wordIndices: Array<{ startWord: number, endWord: number, isWholeWord: boolean }> }}
      */
-    tokenizeWithIndices(rawText) {
+    tokenizeWithIndices(rawText, options = {}) {
         if (!rawText || typeof rawText !== 'string') return { rawWords: [], tokens: [], wordIndices: [] };
         const cleanStr = (str) => str.toLowerCase().replace(/[-–—.,!?:;"]/g, ' ').replace(/\s+/g, ' ').trim();
         const cleaned = cleanStr(rawText);
@@ -331,7 +438,7 @@ class SpellingValidator {
             const nextToken = rawWords[i + 1] || '';
             const compoundToken = `${token} ${nextToken}`.trim();
 
-            // 1. Tratar "double you" / "double u" -> 'W'
+            // 1. Tratar "double you" / "double u" / "double-u" -> 'W'
             if (this.DICIONARIO[compoundToken] === 'W') {
                 tokens.push('W');
                 wordIndices.push({ startWord: i, endWord: i + 1, isWholeWord: false });
@@ -339,7 +446,7 @@ class SpellingValidator {
                 continue;
             }
 
-            // 2. Tratar comando DOUBLE + [Letra] (ex: "double" + "tea" -> "T", "T")
+            // 2. Tratar comando DOUBLE + [Letra/Dígito] (ex: "double" + "tea" -> "T", "T")
             if (this.DICIONARIO[token] === 'DOUBLE' && nextToken) {
                 const mappedLetter = this.DICIONARIO[nextToken] || nextToken.toUpperCase();
                 tokens.push(mappedLetter);
@@ -350,7 +457,18 @@ class SpellingValidator {
                 continue;
             }
 
-            // 3. Aplicação do Dicionário De-Para no Token
+            // 3. Tratar fusão de bigrama se solicitado na hipótese (ex: "as" -> "A", "S")
+            if (options.expandBigrams && this.BIGRAM_FUSIONS[token]) {
+                const letters = this.BIGRAM_FUSIONS[token];
+                for (const l of letters) {
+                    tokens.push(l);
+                    wordIndices.push({ startWord: i, endWord: i, isWholeWord: false });
+                }
+                i++;
+                continue;
+            }
+
+            // 4. Aplicação do Dicionário De-Para no Token
             if (this.DICIONARIO[token]) {
                 tokens.push(this.DICIONARIO[token]);
                 wordIndices.push({ startWord: i, endWord: i, isWholeWord: false });
@@ -358,8 +476,7 @@ class SpellingValidator {
                 tokens.push(token.toUpperCase());
                 wordIndices.push({ startWord: i, endWord: i, isWholeWord: false });
             } else {
-                // É uma palavra inteira (não é letra isolada nem comando de soletração)
-                // Fallback fonético para possíveis nomes de letras
+                // Fallback fonético para possíveis nomes de letras / dígitos
                 let matchedLetter = null;
                 const tokenSound = this.soundex(token);
                 const tokenMeta = this.metaphone(token);
@@ -391,8 +508,6 @@ class SpellingValidator {
 
     /**
      * Tokeniza e mapeia foneticamente todo o fluxo transcrito pelo STT (compatibilidade retroativa)
-     * @param {string} rawText 
-     * @returns {Array<string>} Tokens normalizados
      */
     tokenize(rawText) {
         return this.tokenizeWithIndices(rawText).tokens;
@@ -405,7 +520,6 @@ class SpellingValidator {
         const maxLen = Math.max(detectedTokens.length, targetTokens.length);
         if (maxLen === 0) return 1.0;
 
-        // Similaridade Fonética Ponderada nos Tokens (considerando matriz acústica e SPACE)
         const weightedDist = this.weightedLevenshteinDistance(detectedTokens, targetTokens);
         return Math.max(0, 1 - (weightedDist / maxLen));
     }
@@ -415,14 +529,14 @@ class SpellingValidator {
     // =========================================================================
 
     /**
-     * Validação Rigorosa do Spelling Bee via Fatiamento por Âncora
+     * Validação Rigorosa do Spelling Bee via Fatiamento por Âncora com Multi-Hipótese de Bigramas
      * @param {string} transcricaoStt - Retorno bruto do STT (Deepgram)
-     * @param {string} palavraAlvo - Palavra/Frase alvo do gabarito (ex: "as tasty as", "taught")
+     * @param {string} palavraAlvo - Palavra/Frase alvo do gabarito (ex: "as tasty as", "taught", "in 1983")
      * @param {Object} [options] - Opções de validação (threshold de soletração: 0.85, bordas: 0.70)
      */
     validate(transcricaoStt, palavraAlvo, options = {}) {
         const threshold = typeof options.threshold === 'number' ? options.threshold : this.DEFAULT_SIMILARITY_THRESHOLD;
-        const edgeThreshold = typeof options.edgeThreshold === 'number' ? options.edgeThreshold : 0.70;
+        const edgeThreshold = typeof options.edgeThreshold === 'number' ? options.edgeThreshold : this.DEFAULT_EDGE_THRESHOLD;
 
         if (!transcricaoStt || !transcricaoStt.trim()) {
             return {
@@ -438,83 +552,93 @@ class SpellingValidator {
         const rawText = cleanStr(transcricaoStt);
         const target = cleanStr(palavraAlvo);
 
-        // 1. Tokenização com rastreamento de índices de palavras
-        const { rawWords, tokens, wordIndices } = this.tokenizeWithIndices(rawText);
         const gabaritoArray = this._buildGabarito(palavraAlvo);
         const stringGabarito = gabaritoArray.join(' - ');
 
-        const targetWords = palavraAlvo.trim().split(/\s+/);
+        const targetWords = palavraAlvo.trim().replace(/[-–—]/g, ' ').split(/\s+/).filter(w => w.length > 0);
         const hasSpaceRequirement = targetWords.length > 1;
         const noSpaceExpected = gabaritoArray.filter(x => x !== 'SPACE').join('');
 
-        // 2. ENCONTRAR TODOS OS CANDIDATOS A ÂNCORA DE SOLETRAÇÃO (Miolo)
-        const targetLen = gabaritoArray.length;
-        const minWindow = Math.max(1, targetLen - (hasSpaceRequirement ? 4 : 2));
-        const maxWindow = Math.min(tokens.length, targetLen + 2);
+        // 1. Gera as hipóteses de tokenização (Padrão e com Fusões de Bigramas Expandidas)
+        const hypotheses = [
+            this.tokenizeWithIndices(rawText, { expandBigrams: false }),
+            this.tokenizeWithIndices(rawText, { expandBigrams: true })
+        ];
 
-        let candidates = [];
+        let allCandidates = [];
         let missingSpaceCandidate = null;
 
-        // Varre todas as janelas possíveis
-        for (let w = minWindow; w <= maxWindow; w++) {
-            for (let i = 0; i <= tokens.length - w; i++) {
-                const windowSlice = tokens.slice(i, i + w);
-                const windowIndices = wordIndices.slice(i, i + w);
+        for (const { rawWords, tokens, wordIndices } of hypotheses) {
+            const targetLen = gabaritoArray.length;
+            const minWindow = Math.max(1, targetLen - (hasSpaceRequirement ? 4 : 2));
+            const maxWindow = Math.min(tokens.length, targetLen + 4);
 
-                // Uma janela de soletração NÃO pode conter palavras inteiras pronunciadas (isWholeWord)
-                const containsWholeWords = windowIndices.some(idx => idx.isWholeWord);
-                if (containsWholeWords && rawWords.length > 1) {
-                    continue;
-                }
+            for (let w = minWindow; w <= maxWindow; w++) {
+                for (let i = 0; i <= tokens.length - w; i++) {
+                    const windowSlice = tokens.slice(i, i + w);
+                    const windowIndices = wordIndices.slice(i, i + w);
 
-                const sim = this.calculateSimilarity(windowSlice, gabaritoArray);
-                const startWord = wordIndices[i]?.startWord ?? 0;
-                const endWord = wordIndices[i + w - 1]?.endWord ?? rawWords.length - 1;
+                    // Uma janela de soletração NÃO pode conter palavras inteiras pronunciadas (isWholeWord)
+                    const containsWholeWords = windowIndices.some(idx => idx.isWholeWord);
+                    if (containsWholeWords && rawWords.length > 1) {
+                        continue;
+                    }
 
-                // Verifica se é uma soletração correta mas sem SPACE
-                const noSpaceMatched = windowSlice.filter(x => x !== 'SPACE').join('');
-                const matchNoSpace = (noSpaceMatched === noSpaceExpected);
-                if (hasSpaceRequirement && !windowSlice.includes('SPACE') && matchNoSpace) {
-                    missingSpaceCandidate = {
-                        startIndex: i,
-                        endIndex: i + w,
-                        matchedTokens: windowSlice,
-                        similarity: sim
-                    };
-                }
+                    const sim = this.calculateSimilarity(windowSlice, gabaritoArray);
+                    const startWord = wordIndices[i]?.startWord ?? 0;
+                    const endWord = wordIndices[i + w - 1]?.endWord ?? rawWords.length - 1;
 
-                if (sim >= threshold) {
-                    const prefixWords = rawWords.slice(0, startWord);
-                    const suffixWords = rawWords.slice(endWord + 1);
-                    const prefixText = prefixWords.join(' ').trim();
-                    const suffixText = suffixWords.join(' ').trim();
+                    // Verifica se é uma soletração correta mas sem SPACE
+                    const noSpaceMatched = windowSlice.filter(x => x !== 'SPACE').join('');
+                    const matchNoSpace = (noSpaceMatched === noSpaceExpected);
+                    if (hasSpaceRequirement && !windowSlice.includes('SPACE') && matchNoSpace) {
+                        if (!missingSpaceCandidate || sim > missingSpaceCandidate.similarity) {
+                            missingSpaceCandidate = {
+                                startIndex: i,
+                                endIndex: i + w,
+                                matchedTokens: windowSlice,
+                                similarity: sim,
+                                rawWords,
+                                tokens
+                            };
+                        }
+                    }
 
-                    const prefixSim = prefixText ? this.calculateWordSimilarity(prefixText, target) : 0;
-                    const suffixSim = suffixText ? this.calculateWordSimilarity(suffixText, target) : 0;
+                    if (sim >= threshold) {
+                        const prefixWords = rawWords.slice(0, startWord);
+                        const suffixWords = rawWords.slice(endWord + 1);
+                        const prefixText = prefixWords.join(' ').trim();
+                        const suffixText = suffixWords.join(' ').trim();
 
-                    let totalScore = sim * 100;
-                    if (prefixSim >= edgeThreshold) totalScore += 30;
-                    if (suffixSim >= edgeThreshold) totalScore += 30;
+                        const prefixSim = prefixText ? this.calculateWordSimilarity(prefixText, target) : 0;
+                        const suffixSim = suffixText ? this.calculateWordSimilarity(suffixText, target) : 0;
 
-                    candidates.push({
-                        startIndex: i,
-                        endIndex: i + w,
-                        matchedTokens: windowSlice,
-                        similarity: sim,
-                        startWord,
-                        endWord,
-                        prefixText,
-                        suffixText,
-                        prefixSim,
-                        suffixSim,
-                        totalScore
-                    });
+                        let totalScore = sim * 100;
+                        if (prefixSim >= edgeThreshold) totalScore += 30;
+                        if (suffixSim >= edgeThreshold) totalScore += 30;
+
+                        allCandidates.push({
+                            startIndex: i,
+                            endIndex: i + w,
+                            matchedTokens: windowSlice,
+                            similarity: sim,
+                            startWord,
+                            endWord,
+                            prefixText,
+                            suffixText,
+                            prefixSim,
+                            suffixSim,
+                            totalScore,
+                            rawWords,
+                            tokens
+                        });
+                    }
                 }
             }
         }
 
         // Se encontrou candidato com falta de SPACE e nenhum candidato completo
-        if (candidates.length === 0 && missingSpaceCandidate) {
+        if (allCandidates.length === 0 && missingSpaceCandidate) {
             return {
                 isValid: false,
                 isFullyCompliant: false,
@@ -525,7 +649,7 @@ class SpellingValidator {
                 details: {
                     similarity: missingSpaceCandidate.similarity,
                     textoOriginal: rawText,
-                    arrayLetrasDetectadas: tokens,
+                    arrayLetrasDetectadas: missingSpaceCandidate.tokens,
                     arrayLetrasCasadas: missingSpaceCandidate.matchedTokens,
                     stringFinal: missingSpaceCandidate.matchedTokens.join(' - '),
                     stringGabarito: stringGabarito
@@ -534,16 +658,22 @@ class SpellingValidator {
         }
 
         // Se nenhum candidato de soletração atingiu o threshold (85%)
-        if (candidates.length === 0) {
+        if (allCandidates.length === 0) {
             let bestSim = 0;
-            let bestWindow = tokens;
-            for (let w = minWindow; w <= maxWindow; w++) {
-                for (let i = 0; i <= tokens.length - w; i++) {
-                    const slice = tokens.slice(i, i + w);
-                    const s = this.calculateSimilarity(slice, gabaritoArray);
-                    if (s > bestSim) {
-                        bestSim = s;
-                        bestWindow = slice;
+            let bestWindow = hypotheses[0].tokens;
+            for (const { tokens } of hypotheses) {
+                const targetLen = gabaritoArray.length;
+                const minWindow = Math.max(1, targetLen - (hasSpaceRequirement ? 4 : 2));
+                const maxWindow = Math.min(tokens.length, targetLen + 4);
+
+                for (let w = minWindow; w <= maxWindow; w++) {
+                    for (let i = 0; i <= tokens.length - w; i++) {
+                        const slice = tokens.slice(i, i + w);
+                        const s = this.calculateSimilarity(slice, gabaritoArray);
+                        if (s > bestSim) {
+                            bestSim = s;
+                            bestWindow = slice;
+                        }
                     }
                 }
             }
@@ -559,7 +689,7 @@ class SpellingValidator {
                 details: {
                     similarity: bestSim,
                     textoOriginal: rawText,
-                    arrayLetrasDetectadas: tokens,
+                    arrayLetrasDetectadas: hypotheses[0].tokens,
                     arrayLetrasCasadas: bestWindow,
                     stringFinal: bestWindow.join(' - '),
                     stringGabarito: stringGabarito
@@ -568,8 +698,8 @@ class SpellingValidator {
         }
 
         // Ordena os candidatos pela maior pontuação total (melhor encaixe de soletração + bordas)
-        candidates.sort((a, b) => b.totalScore - a.totalScore);
-        const bestCandidate = candidates[0];
+        allCandidates.sort((a, b) => b.totalScore - a.totalScore);
+        const bestCandidate = allCandidates[0];
 
         const {
             matchedTokens,
@@ -577,7 +707,8 @@ class SpellingValidator {
             prefixText,
             suffixText,
             prefixSim,
-            suffixSim
+            suffixSim,
+            tokens
         } = bestCandidate;
 
         const stringFinalExtraida = matchedTokens.join(' - ');
@@ -711,12 +842,19 @@ class SpellingValidator {
         };
     }
 
+    /**
+     * Constrói o gabarito de soletração oficial com suporte a letras (A-Z) e dígitos (0-9)
+     * @param {string} palavraAlvo 
+     * @returns {Array<string>} Gabarito de tokens (ex: ['I', 'N', 'SPACE', '1', '9', '8', '3'])
+     */
     _buildGabarito(palavraAlvo) {
-        const words = palavraAlvo.trim().split(/\s+/);
+        if (!palavraAlvo || typeof palavraAlvo !== 'string') return [];
+        // Converte hífens em espaços para tratar palavras compostas
+        const words = palavraAlvo.trim().replace(/[-–—]/g, ' ').split(/\s+/).filter(w => w.length > 0);
         const gabarito = [];
 
         for (let wIdx = 0; wIdx < words.length; wIdx++) {
-            const word = words[wIdx].replace(/[^a-zA-Z]/g, '');
+            const word = words[wIdx].replace(/[^a-zA-Z0-9]/g, '');
             for (let cIdx = 0; cIdx < word.length; cIdx++) {
                 gabarito.push(word[cIdx].toUpperCase());
             }

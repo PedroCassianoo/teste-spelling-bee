@@ -86,32 +86,30 @@ class DeepgramService {
         const model = window.CONFIG.STT_MODEL || 'nova-2';
         const lang = window.CONFIG.LANGUAGE || 'en';
         
-        // Constrói URL base com parâmetros de transcrição
-        const urlObj = new URL('https://api.deepgram.com/v1/listen');
-        urlObj.searchParams.set('model', model);
-        urlObj.searchParams.set('language', lang);
-        urlObj.searchParams.set('smart_format', 'true');
-        urlObj.searchParams.set('punctuate', 'false');
+        // Constrói os parâmetros da requisição STT com foco em Keywords da rodada (Fase 2: Cabresto)
+        const params = new URLSearchParams();
+        const rawTarget = typeof targetContext === 'string' 
+            ? targetContext 
+            : (targetContext?.word || targetContext?.full_phrase || '');
 
-        // =========================================================================
-        // 1. INJEÇÃO DE CONTEXTO (DEEPGRAM HINTING & KEYWORD BOOSTING)
-        // =========================================================================
-        if (targetContext) {
-            const hints = this._generateHintKeywords(targetContext);
-            console.log("[Deepgram STT] Injetando Hints/Keywords contextuais:", hints);
+        if (rawTarget) {
+            const buildFn = (typeof window !== 'undefined' && typeof window.buildKeywordsParaRodada === 'function')
+                ? window.buildKeywordsParaRodada
+                : this._buildKeywordsParaRodada.bind(this);
 
-            // Injeta keywords com pesos (boost)
-            for (const item of hints.keywords) {
-                urlObj.searchParams.append('keywords', `${item.keyword}:${item.boost}`);
-            }
-
-            // Injeta termos de busca fonética (search)
-            for (const sTerm of hints.searchTerms) {
-                urlObj.searchParams.append('search', sTerm);
-            }
+            const keywords = buildFn(rawTarget);
+            console.log(`[Deepgram STT] Injetando ${keywords.length} keywords para "${rawTarget}":`, keywords);
+            keywords.forEach(termo => params.append('keywords', termo));
         }
 
-        const response = await fetch(urlObj.toString(), {
+        params.append('model', model);
+        params.append('language', lang);
+        params.append('punctuate', 'false');
+        params.append('smart_format', 'true');
+
+        const url = `https://api.deepgram.com/v1/listen?${params.toString()}`;
+
+        const response = await fetch(url, {
             method: 'POST',
             headers: {
                 'Authorization': `Token ${apiKey}`,
@@ -135,98 +133,48 @@ class DeepgramService {
     }
 
     /**
-     * Gera lista de palavras-chave, nomes fonéticos e comandos com boost para o Deepgram
-     * @param {string|Object} targetContext - Palavra/Frase alvo
-     * @returns {{ keywords: Array<{keyword: string, boost: number}>, searchTerms: Array<string> }}
+     * Fallback interno caso build-deepgram-keywords.js não esteja disponível
      */
-    _generateHintKeywords(targetContext) {
-        const rawTarget = typeof targetContext === 'string' 
-            ? targetContext 
-            : (targetContext?.word || targetContext?.full_phrase || '');
-        
-        const cleanTarget = rawTarget.toLowerCase().replace(/[^a-z\s]/g, '').trim();
-        if (!cleanTarget) return { keywords: [], searchTerms: [] };
-
-        const keywords = [];
-        const searchTerms = [];
-        const addedKw = new Set();
-
-        const addKeyword = (kw, boost) => {
-            const k = kw.trim().toLowerCase();
-            if (k && !addedKw.has(k)) {
-                addedKw.add(k);
-                keywords.push({ keyword: k, boost: boost });
-            }
-        };
-
-        // 1. Frase/Palavra alvo completa com peso máximo (boost: 5)
-        addKeyword(cleanTarget, 5);
-        searchTerms.push(cleanTarget);
-
-        // 2. Palavras individuais da frase (se composta)
-        const words = cleanTarget.split(/\s+/).filter(w => w.length > 0);
-        for (const w of words) {
-            addKeyword(w, 4);
+    _buildKeywordsParaRodada(palavraAlvo) {
+        if (typeof window !== 'undefined' && typeof window.buildKeywordsParaRodada === 'function') {
+            return window.buildKeywordsParaRodada(palavraAlvo);
         }
 
-        // 3. Sequência soletrada com espaços
-        // Ex: "taught" -> "t a u g h t" | "as tasty as" -> "a s space t a s t y space a s"
-        const spelledParts = [];
-        for (let i = 0; i < words.length; i++) {
-            const letters = words[i].split('');
-            spelledParts.push(letters.join(' '));
-            if (i < words.length - 1) {
-                spelledParts.push('space');
-            }
-        }
-        const spelledSequence = spelledParts.join(' ');
-        addKeyword(spelledSequence, 5);
-        searchTerms.push(spelledSequence);
+        const MAX_VARIANTES_POR_LETRA = 3;
+        const PESO_LETRA = 2;
+        const PESO_PALAVRA_ALVO = 3;
+        const PESO_COMANDO = 2;
 
-        // 4. Comandos especiais essenciais de Spelling Bee (boost: 4)
-        addKeyword('space', 4);
-        addKeyword('double', 4);
+        const dict = (typeof window !== 'undefined' && window.spellingValidator && window.spellingValidator.dicionarioData)
+            ? window.spellingValidator.dicionarioData
+            : {};
 
-        // 5. Nomes fonéticos das letras presentes na palavra (evita confusões clássicas como aitch, tea, etc.)
-        const letterPhoneMap = {
-            'a': ['ay', 'aye'],
-            'b': ['bee'],
-            'c': ['see', 'sea'],
-            'd': ['dee'],
-            'e': ['ee'],
-            'f': ['eff'],
-            'g': ['gee', 'jee'],
-            'h': ['aitch', 'eight', 'age'],
-            'i': ['eye', 'aye'],
-            'j': ['jay'],
-            'k': ['kay'],
-            'l': ['ell', 'el'],
-            'm': ['em'],
-            'n': ['en'],
-            'o': ['oh'],
-            'p': ['pee', 'pea'],
-            'q': ['cue', 'queue'],
-            'r': ['are', 'ar'],
-            's': ['ess', 'as'],
-            't': ['tea', 'tee'],
-            'u': ['you'],
-            'v': ['vee'],
-            'w': ['double you', 'double u'],
-            'x': ['ex'],
-            'y': ['why'],
-            'z': ['zee', 'zed']
-        };
+        const cleanTarget = String(palavraAlvo || '').trim();
+        if (!cleanTarget) return [];
 
-        const uniqueLetters = new Set(cleanTarget.replace(/\s+/g, '').split(''));
-        for (const letter of uniqueLetters) {
-            addKeyword(letter, 4);
-            const phones = letterPhoneMap[letter] || [];
-            for (const p of phones) {
-                addKeyword(p, 4);
+        const termos = [];
+        termos.push(`${cleanTarget}:${PESO_PALAVRA_ALVO}`);
+
+        const letras = [...new Set(cleanTarget.toUpperCase().match(/[A-Z]/g) || [])];
+        for (const letra of letras) {
+            const variantes = (dict.letters?.[letra] || []).slice(0, MAX_VARIANTES_POR_LETRA);
+            for (const v of variantes) {
+                if (v.includes(' ')) continue;
+                termos.push(`${v}:${PESO_LETRA}`);
             }
         }
 
-        return { keywords, searchTerms };
+        if (/\s/.test(cleanTarget)) {
+            const spaceVars = (dict.commands?.SPACE || ["space", "spice", "pace"]).slice(0, 3);
+            for (const v of spaceVars) termos.push(`${v}:${PESO_COMANDO}`);
+        }
+
+        if (/([a-z0-9])\1/i.test(cleanTarget)) {
+            const doubleVars = (dict.commands?.DOUBLE || ["double", "buble", "bubble"]).slice(0, 3);
+            for (const v of doubleVars) termos.push(`${v}:${PESO_COMANDO}`);
+        }
+
+        return termos;
     }
 
     /**

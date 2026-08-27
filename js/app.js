@@ -41,6 +41,9 @@ class SpellingBeeApp {
     }
 
     async initDatabaseAndRender() {
+        if (window.spellingValidator && typeof window.spellingValidator.loadFromUrl === 'function') {
+            await window.spellingValidator.loadFromUrl('dicionario_fonetico_base.json');
+        }
         await this.loadWordsFromSupabase();
         this.renderWord();
     }

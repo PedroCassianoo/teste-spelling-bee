@@ -1,0 +1,72 @@
+{
+  "_meta": {
+    "versao": "1.0",
+    "fase": "1 - Dicionário Base",
+    "fonte_primaria": "logs_deepgram_stt_analise.md (28 amostras reais, 5 categorias de variação)",
+    "sotaque": "não tratado nesta fase, conforme decisão do projeto",
+    "granularidade": "letra por letra - a validação monta a combinação da palavra em tempo real a partir deste dicionário",
+    "observacoes_abertas": [
+      "O caractere literal da letra (ex: 'b', 'r', 's', 't') foi incluído como variante base para todas as 26 letras, mesmo nas que não apareceram assim nos logs, porque o Deepgram já retornou letras literais em várias amostras (ex: amostras 18, 19, 21). Baixo risco, alta cobertura.",
+      "Dígitos (0-9) foram adicionados por conhecimento geral, NÃO validados pelos logs reais, porque a tabela palavras_spelling tem itens com números (ex: 'in 1983', 'February 21st', 'twenty-two'). Recomendo alimentar isso com dados reais assim que a Fase 4 (feedback loop) estiver rodando.",
+      "PENDENTE DE CONFIRMAÇÃO: vários itens de T1/T2 são frases completas com pontuação ('Yes, I was.', 'No, we weren't.', 'Where were they?'). Soletrar isso letra por letra incluindo vírgula, ponto de interrogação e apóstrofo é atípico para um Spelling Bee. Esses itens passam pelo mesmo validador de voz ou são usados em outro exercício do app? Se passam por aqui, falta mapear os nomes de pontuação (comma, period, question mark, apostrophe).",
+      "Ambiguidade conhecida: a letra 'S' sozinha pode soar como 'as' (mesmo token da fusão A+S em bigram_fusions), e 'I'/'E' compartilham o homófono 'i'. Isso não se resolve no dicionário, é um problema do algoritmo de alinhamento (Fase 2/3): ele precisa testar mais de uma hipótese de alinhamento, não só bater token a token na ordem."
+    ]
+  },
+  "letters": {
+    "A": ["a", "ay", "ah", "aye", "eight"],
+    "B": ["b", "be", "bee"],
+    "C": ["c", "see", "sea", "si"],
+    "D": ["d", "dee", "de", "di", "thee"],
+    "E": ["e", "ee", "i", "he"],
+    "F": ["f", "ef", "eff", "if", "half"],
+    "G": ["g", "gee", "jee", "ji"],
+    "H": ["h", "aitch", "age", "eight", "each", "edge", "eitch"],
+    "I": ["i", "eye", "aye", "ai"],
+    "J": ["j", "jay", "hey", "joy"],
+    "K": ["k", "kay", "ok"],
+    "L": ["l", "el", "ell", "hell"],
+    "M": ["m", "em", "am"],
+    "N": ["n", "en", "an", "and", "in"],
+    "O": ["o", "oh", "owe", "zero"],
+    "P": ["p", "pee", "pea", "pe"],
+    "Q": ["q", "cue", "queue", "cute"],
+    "R": ["r", "are", "our", "ar", "er"],
+    "S": ["s", "as", "is", "yes", "ass", "es", "us"],
+    "T": ["t", "tea", "tee", "ti", "to"],
+    "U": ["u", "you", "yu", "ew"],
+    "V": ["v", "vee", "ve"],
+    "W": ["w", "double you", "double u", "double-u", "dabliu"],
+    "X": ["x", "ex", "axe", "ax"],
+    "Y": ["y", "why", "wai", "uai"],
+    "Z": ["z", "zee", "zed", "set"]
+  },
+  "digits": {
+    "0": ["0", "zero", "oh"],
+    "1": ["1", "one", "won"],
+    "2": ["2", "two", "too", "to"],
+    "3": ["3", "three"],
+    "4": ["4", "four", "for"],
+    "5": ["5", "five"],
+    "6": ["6", "six"],
+    "7": ["7", "seven"],
+    "8": ["8", "eight", "ate"],
+    "9": ["9", "nine"]
+  },
+  "commands": {
+    "SPACE": ["space", "spice", "pace", "base", "spay", "place", "blank"],
+    "DOUBLE": ["double", "buble", "bubble", "dabble", "bobble", "2", "two"]
+  },
+  "bigram_fusions": {
+    "_descricao": "Sequências de duas letras que o Deepgram funde em uma palavra real de uma vez só. Lista semente vinda dos logs, não é exaustiva. Alimentar via Fase 4.",
+    "AS": ["as"],
+    "IN": ["in"],
+    "OF": ["of"]
+  },
+  "acoustic_confusions": {
+    "_descricao": "Trocas fonéticas próximas por qualidade de microfone ou sotaque. Não usado na validação estrita, é insumo para uma futura camada de fuzzy matching.",
+    "M": ["N"],
+    "N": ["M"],
+    "B": ["V", "P"],
+    "D": ["T"]
+  }
+}
