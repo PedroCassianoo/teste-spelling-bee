@@ -12,3 +12,6 @@ Thumbs.db
 
 # Configurações locais com chaves privadas se houver
 *.local
+
+# Rascunhos temporários
+scratch/

@@ -41,9 +41,17 @@ class SpellingBeeApp {
     }
 
     async initDatabaseAndRender() {
-        if (window.spellingValidator && typeof window.spellingValidator.loadFromUrl === 'function') {
+        const supabaseUrl = window.CONFIG.SUPABASE_URL;
+        const supabaseKey = window.CONFIG.getSupabaseKey();
+
+        // 1. Carrega Dicionário Fonético Dinâmico do Supabase (com cache de 5m)
+        if (window.spellingValidator && typeof window.spellingValidator.loadFromSupabase === 'function') {
+            await window.spellingValidator.loadFromSupabase(supabaseUrl, supabaseKey);
+        } else if (window.spellingValidator && typeof window.spellingValidator.loadFromUrl === 'function') {
             await window.spellingValidator.loadFromUrl('dicionario_fonetico_base.json');
         }
+
+        // 2. Carrega as Palavras do Banco
         await this.loadWordsFromSupabase();
         this.renderWord();
     }
@@ -189,6 +197,15 @@ class SpellingBeeApp {
 
             console.log("[SpellingValidator] Resultado detalhado:", validation);
 
+            // Instrumentação do Log no Supabase (Fase 4: Feedback Loop) - Assíncrono Fire-and-forget
+            this.logSpellingAttempt({
+                palavra_alvo: current.word || current.full_phrase || '',
+                nivel: current.level || null,
+                transcricao_bruta: transcript,
+                alinhamento: validation.alinhamento || validation.details?.alinhamento || [],
+                resultado: validation.isValid ? 'acerto' : 'erro'
+            });
+
             if (validation.isValid) {
                 this.handleSuccess(validation.message, validation.details);
             } else {
@@ -201,6 +218,35 @@ class SpellingBeeApp {
             this.triggerShake();
             this.setMicState('idle');
         }
+    }
+
+    /**
+     * Envia o log de validação fonética para o Supabase de forma assíncrona (não bloqueante)
+     * @param {Object} payload 
+     */
+    logSpellingAttempt(payload) {
+        const supabaseUrl = window.CONFIG.SUPABASE_URL;
+        const supabaseKey = window.CONFIG.getSupabaseKey();
+        if (!supabaseUrl || !supabaseKey) return;
+
+        fetch(`${supabaseUrl}/rest/v1/logs_spelling`, {
+            method: 'POST',
+            headers: {
+                'apikey': supabaseKey,
+                'Authorization': `Bearer ${supabaseKey}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
+            },
+            body: JSON.stringify(payload)
+        }).then(res => {
+            if (res.ok) {
+                console.log("[Supabase Log] Tentativa registrada em logs_spelling.");
+            } else {
+                console.warn("[Supabase Log] Status ao salvar log:", res.status);
+            }
+        }).catch(err => {
+            console.error("[Supabase Log] Falha não impeditiva no log_spelling:", err);
+        });
     }
 
     handleSuccess(message, details) {

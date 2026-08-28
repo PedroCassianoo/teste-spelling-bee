@@ -11,7 +11,7 @@ Para que a entrada de voz seja capturada e validada corretamente, o aluno deve s
 1. **Palavra/Frase Inicial:** O aluno pronuncia a palavra ou frase alvo inteira antes de começar a soletrar.
 2. **Soletração (Letra por Letra):** O aluno pronuncia cada letra de forma isolada e sequencial.
    - **Espaços entre palavras:** Quando o alvo for uma frase, o aluno deve dizer a palavra **"SPACE"** para indicar a separação entre palavras.
-   - **Letras Repetidas:** Para letras em sequência, o aluno deve usar a palavra **"DOUBLE"** seguida da letra correspondente (ex: *double T*, *double O*). O sistema também deve aceitar a soletração repetida literalmente (ex: *T - T*).
+   - **Letras Repetidas:** Para letras em sequência, o aluno deve usar a palavra **"DOUBLE"** seguida da letra correspondente (ex: *double T*, *double O*). O sistema também aceita a soletração repetida literalmente (ex: *T - T*).
 3. **Palavra/Frase Final:** O aluno repete a palavra ou frase alvo inteira para finalizar a tentativa.
 
 **Exemplo de Fluxo Esperado (Gabarito da API para *"as tasty as"*):**
@@ -19,9 +19,19 @@ Para que a entrada de voz seja capturada e validada corretamente, o aluno deve s
 
 ---
 
-## 2. Dicionário de Normalização Fonética (De-Para)
+## 2. Dicionário Embarcado Local (`spelling_dict.json`)
 
-As APIs de STT (como Deepgram) utilizam modelos de linguagem que tendem a forçar a junção de fonemas soltos em palavras conhecidas. O sistema deve aplicar o mapeamento abaixo para converter essas "alucinações da API" de volta para o caractere correto **somente durante o bloco de soletração**.
+Para eliminar latência de rede e reduzir custos de consultas por palavra no Supabase, a aplicação conta com o `spelling_dict.json` embarcado localmente no frontend:
+
+- **468 palavras e expressões mapeadas.**
+- **1.929 variantes fonéticas pré-computadas.**
+- **Validação O(1) Instantânea:** Verificação inicial ultrarrápida via `array.includes(userInput)` local antes do fallback para o algoritmo de alinhamento com tolerância acústica ponderada.
+
+---
+
+## 3. Dicionário de Normalização Fonética (De-Para)
+
+As APIs de STT (como Deepgram) utilizam modelos de linguagem que tendem a forçar a junção de fonemas soltos em palavras conhecidas. O sistema aplica o mapeamento abaixo para converter essas "alucinações da API" de volta para o caractere correto **somente durante o bloco de soletração**.
 
 ### Alfabeto e Confusões Comuns do STT
 | Letra / Comando | Confusões da API (Palavras que o STT transcreve) |
@@ -61,7 +71,7 @@ As APIs de STT (como Deepgram) utilizam modelos de linguagem que tendem a força
 
 ---
 
-## 3. Lógica de Validação Estrita: Fatiamento por Âncora (Palavra + Soletração + Palavra)
+## 4. Lógica de Validação Estrita: Fatiamento por Âncora (Palavra + Soletração + Palavra)
 
 Para garantir o cumprimento rigoroso das regras oficiais do *Spelling Bee*, a soletração correta é apenas o passo central de uma estrutura obrigatória de três etapas:
 
@@ -73,7 +83,7 @@ O sistema localiza a **âncora de soletração** no meio da frase e avalia separ
 
 ---
 
-## 4. Pipeline de Execução em 5 Etapas
+## 5. Pipeline de Execução em 5 Etapas
 
 ### Passo 1: Tokenização com Rastreamento de Palavras
 A transcrição é convertida em tokens rastreando a correspondência exata com as palavras originais da fala (`rawWords`), separando palavras completas de letras isoladas e comandos de soletração (`SPACE`, `DOUBLE`).
@@ -98,4 +108,18 @@ Com a âncora isolada, o sistema extrai o Prefixo e o Sufixo e calcula a similar
 - **Faltou fim:** `❌ Reprovado: Faltou falar a palavra para finalizar.`
 - **Completo:** `🎉 Perfeito! Executou os 3 passos rigorosamente: Palavra ➔ Soletração ➔ Palavra!`
 
+---
 
+## 6. Telemetria e Alinhamento Letra a Letra (Feedback Loop - Fase 4)
+
+Cada execução produz um objeto de telemetria `alinhamento`:
+
+```json
+[
+  { "posicao": 0, "esperado": "T", "ouvido": "tea", "bateu": true, "tipo": "letra" },
+  { "posicao": 1, "esperado": "A", "ouvido": "ay", "bateu": true, "tipo": "letra" },
+  { "posicao": 2, "esperado": "SPACE", "ouvido": "space", "bateu": true, "tipo": "comando" }
+]
+```
+
+Os logs são enviados ao Supabase (`logs_validacao_fonetica`) e alimentam a fila `sugestoes_foneticas`, que promove automaticamente novas variantes fonéticas validadas ao atingir o limiar configurado via cron job.

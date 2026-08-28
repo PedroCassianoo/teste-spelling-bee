@@ -212,6 +212,237 @@ class SpellingValidator {
         return false;
     }
 
+    /**
+     * Carrega o dicionário fonético dinâmico direto da tabela Supabase (Fase 4: Feedback Loop)
+     * Inclui cache em memória/localStorage de 5 minutos para evitar requisições de rede repetidas.
+     * @param {string} supabaseUrl 
+     * @param {string} supabaseKey 
+     * @param {boolean} [forceRefresh=false]
+     */
+    async loadFromSupabase(supabaseUrl, supabaseKey, forceRefresh = false) {
+        if (!supabaseUrl || !supabaseKey) {
+            return this.loadFromUrl();
+        }
+
+        const CACHE_KEY = 'spelling_bee_phonetic_dict_cache';
+        const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+
+        // 1. Tenta recuperar do cache se não for forceRefresh
+        if (!forceRefresh && typeof localStorage !== 'undefined') {
+            try {
+                const cached = localStorage.getItem(CACHE_KEY);
+                if (cached) {
+                    const parsed = JSON.parse(cached);
+                    if (parsed.timestamp && (Date.now() - parsed.timestamp < CACHE_TTL_MS) && parsed.data) {
+                        this.loadDictionary(parsed.data);
+                        console.log("[SpellingValidator] Dicionário fonético carregado do cache local (válido por 5m).");
+                        return true;
+                    }
+                }
+            } catch (e) {
+                // ignore cache read error
+            }
+        }
+
+        // 2. Busca do Supabase REST API
+        if (typeof fetch === 'function') {
+            try {
+                const endpoint = `${supabaseUrl}/rest/v1/dicionario_fonetico?select=*`;
+                const resp = await fetch(endpoint, {
+                    headers: {
+                        'apikey': supabaseKey,
+                        'Authorization': `Bearer ${supabaseKey}`
+                    }
+                });
+
+                if (resp.ok) {
+                    const rows = await resp.json();
+                    if (Array.isArray(rows) && rows.length > 0) {
+                        const dictData = {
+                            letters: {},
+                            digits: {},
+                            commands: {},
+                            bigram_fusions: {},
+                            acoustic_confusions: {}
+                        };
+
+                        for (const row of rows) {
+                            if (row.tipo === 'letra') {
+                                dictData.letters[row.chave] = row.variantes;
+                            } else if (row.tipo === 'digito') {
+                                dictData.digits[row.chave] = row.variantes;
+                            } else if (row.tipo === 'comando') {
+                                dictData.commands[row.chave] = row.variantes;
+                            } else if (row.tipo === 'fusao_bigrama') {
+                                dictData.bigram_fusions[row.chave] = row.variantes;
+                            } else if (row.tipo === 'confusao_acustica') {
+                                dictData.acoustic_confusions[row.chave] = row.variantes;
+                            }
+                        }
+
+                        this.loadDictionary(dictData);
+
+                        if (typeof localStorage !== 'undefined') {
+                            try {
+                                localStorage.setItem(CACHE_KEY, JSON.stringify({
+                                    timestamp: Date.now(),
+                                    data: dictData
+                                }));
+                            } catch (e) {
+                                // ignore storage errors
+                            }
+                        }
+
+                        console.log(`[SpellingValidator] Dicionário fonético carregado do Supabase (${rows.length} entradas).`);
+                        return true;
+                    }
+                }
+            } catch (err) {
+                console.warn("[SpellingValidator] Erro ao carregar do Supabase, recorrendo ao fallback:", err.message);
+            }
+        }
+
+        return this.loadFromUrl();
+    }
+
+    /**
+     * Identifica o tipo do elemento do gabarito ou token
+     */
+    _getElementType(element) {
+        if (!element) return 'letra';
+        const upper = String(element).toUpperCase().trim();
+        if (['SPACE', 'DOUBLE'].includes(upper)) return 'comando';
+        if (/^[0-9]$/.test(upper)) return 'digito';
+        if (upper.length > 1 && !['SPACE', 'DOUBLE'].includes(upper)) return 'fusao_bigrama';
+        return 'letra';
+    }
+
+    /**
+     * Constrói o alinhamento posição a posição (letra por letra / comando por comando)
+     * entre o gabarito oficial e os tokens ouvidos pelo STT (Fase 4: Feedback Loop)
+     * @param {Array<string>} gabaritoArray - Tokens esperados (ex: ['A', 'P', 'P', 'L', 'E'])
+     * @param {Array<string>} detectedTokens - Tokens identificados na janela de soletração (ex: ['A', 'K', 'P', 'L', 'E'])
+     * @param {Array<string>} rawWords - Palavras brutas da transcrição
+     * @param {Array<Object>} [wordIndices] - Mapeamento de índices das palavras brutas
+     * @returns {Array<{ esperado: string, tipo: string, token_ouvido: string, bateu: boolean }>}
+     */
+    buildAlignment(gabaritoArray, detectedTokens = [], rawWords = [], wordIndices = []) {
+        if (!Array.isArray(gabaritoArray) || gabaritoArray.length === 0) {
+            return [];
+        }
+
+        const n = gabaritoArray.length;
+        const m = Array.isArray(detectedTokens) ? detectedTokens.length : 0;
+
+        // DP matrix para Alinhamento Global (Needleman-Wunsch)
+        const dp = Array.from({ length: n + 1 }, () => new Float32Array(m + 1));
+        const MATCH_SCORE = 2.0;
+        const ACOUSTIC_SCORE = 1.0;
+        const MISMATCH_PENALTY = -1.0;
+        const GAP_PENALTY = -1.5;
+
+        for (let i = 0; i <= n; i++) dp[i][0] = i * GAP_PENALTY;
+        for (let j = 0; j <= m; j++) dp[0][j] = j * GAP_PENALTY;
+
+        for (let i = 1; i <= n; i++) {
+            const exp = gabaritoArray[i - 1];
+            for (let j = 1; j <= m; j++) {
+                const det = detectedTokens[j - 1];
+                let score = MISMATCH_PENALTY;
+                if (det === exp) {
+                    score = MATCH_SCORE;
+                } else if (this.ACOUSTIC_CONFUSIONS.has(`${det}-${exp}`)) {
+                    score = ACOUSTIC_SCORE;
+                }
+
+                dp[i][j] = Math.max(
+                    dp[i - 1][j - 1] + score,
+                    dp[i - 1][j] + GAP_PENALTY,
+                    dp[i][j - 1] + GAP_PENALTY
+                );
+            }
+        }
+
+        // Backtracking para recuperar o alinhamento
+        let i = n;
+        let j = m;
+        const alignment = [];
+
+        const getRawWordForToken = (tokenIdx) => {
+            if (tokenIdx < 0 || tokenIdx >= m) return '';
+            if (wordIndices && wordIndices[tokenIdx]) {
+                const { startWord, endWord } = wordIndices[tokenIdx];
+                if (rawWords && startWord !== undefined && endWord !== undefined) {
+                    return rawWords.slice(startWord, endWord + 1).join(' ').trim();
+                }
+            }
+            if (rawWords && rawWords[tokenIdx]) {
+                return rawWords[tokenIdx];
+            }
+            return (detectedTokens[tokenIdx] || '').toLowerCase();
+        };
+
+        const matchesExpected = (exp, det, rawToken) => {
+            if (det === exp) return true;
+            const cleanRaw = (rawToken || '').toLowerCase().trim();
+            if (!cleanRaw) return false;
+
+            if (this.dicionarioData) {
+                const variants = (this.dicionarioData.letters?.[exp] || [])
+                    .concat(this.dicionarioData.digits?.[exp] || [])
+                    .concat(this.dicionarioData.commands?.[exp] || []);
+                if (variants.some(v => v.toLowerCase() === cleanRaw)) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        while (i > 0 || j > 0) {
+            if (i > 0 && j > 0) {
+                const exp = gabaritoArray[i - 1];
+                const det = detectedTokens[j - 1];
+                let score = MISMATCH_PENALTY;
+                if (det === exp) {
+                    score = MATCH_SCORE;
+                } else if (this.ACOUSTIC_CONFUSIONS.has(`${det}-${exp}`)) {
+                    score = ACOUSTIC_SCORE;
+                }
+
+                if (Math.abs(dp[i][j] - (dp[i - 1][j - 1] + score)) < 0.001) {
+                    const rawToken = getRawWordForToken(j - 1);
+                    const bateu = matchesExpected(exp, det, rawToken);
+                    alignment.unshift({
+                        esperado: exp,
+                        tipo: this._getElementType(exp),
+                        token_ouvido: rawToken,
+                        bateu: bateu
+                    });
+                    i--;
+                    j--;
+                    continue;
+                }
+            }
+
+            if (i > 0 && (j === 0 || Math.abs(dp[i][j] - (dp[i - 1][j] + GAP_PENALTY)) < 0.001)) {
+                const exp = gabaritoArray[i - 1];
+                alignment.unshift({
+                    esperado: exp,
+                    tipo: this._getElementType(exp),
+                    token_ouvido: '',
+                    bateu: false
+                });
+                i--;
+            } else if (j > 0) {
+                j--;
+            } else {
+                break;
+            }
+        }
+
+        return alignment;
+    }
+
     // =========================================================================
     // ALGORITMOS DE ANÁLISE FONÉTICA (SOUNDEX & METAPHONE)
     // =========================================================================
@@ -539,12 +770,22 @@ class SpellingValidator {
         const edgeThreshold = typeof options.edgeThreshold === 'number' ? options.edgeThreshold : this.DEFAULT_EDGE_THRESHOLD;
 
         if (!transcricaoStt || !transcricaoStt.trim()) {
+            const gabaritoArray = this._buildGabarito(palavraAlvo);
+            const alinhamento = gabaritoArray.map(exp => ({
+                esperado: exp,
+                tipo: this._getElementType(exp),
+                token_ouvido: '',
+                bateu: false
+            }));
             return {
                 isValid: false,
                 isFullyCompliant: false,
                 reason: 'NO_SPEECH',
                 message: 'Não conseguimos capturar sua voz. Fale próximo ao microfone.',
-                details: {}
+                alinhamento: alinhamento,
+                details: {
+                    alinhamento: alinhamento
+                }
             };
         }
 
@@ -599,7 +840,8 @@ class SpellingValidator {
                                 matchedTokens: windowSlice,
                                 similarity: sim,
                                 rawWords,
-                                tokens
+                                tokens,
+                                wordIndices
                             };
                         }
                     }
@@ -630,7 +872,8 @@ class SpellingValidator {
                             suffixSim,
                             totalScore,
                             rawWords,
-                            tokens
+                            tokens,
+                            wordIndices: windowIndices
                         });
                     }
                 }
@@ -639,6 +882,12 @@ class SpellingValidator {
 
         // Se encontrou candidato com falta de SPACE e nenhum candidato completo
         if (allCandidates.length === 0 && missingSpaceCandidate) {
+            const alinhamento = this.buildAlignment(
+                gabaritoArray,
+                missingSpaceCandidate.matchedTokens,
+                missingSpaceCandidate.rawWords,
+                missingSpaceCandidate.wordIndices
+            );
             return {
                 isValid: false,
                 isFullyCompliant: false,
@@ -646,13 +895,15 @@ class SpellingValidator {
                 type: 'error',
                 reason: 'MISSING_SPACE',
                 message: `⚠️ Você esqueceu de falar "SPACE" para separar as palavras da expressão!`,
+                alinhamento: alinhamento,
                 details: {
                     similarity: missingSpaceCandidate.similarity,
                     textoOriginal: rawText,
                     arrayLetrasDetectadas: missingSpaceCandidate.tokens,
                     arrayLetrasCasadas: missingSpaceCandidate.matchedTokens,
                     stringFinal: missingSpaceCandidate.matchedTokens.join(' - '),
-                    stringGabarito: stringGabarito
+                    stringGabarito: stringGabarito,
+                    alinhamento: alinhamento
                 }
             };
         }
@@ -661,22 +912,42 @@ class SpellingValidator {
         if (allCandidates.length === 0) {
             let bestSim = 0;
             let bestWindow = hypotheses[0].tokens;
-            for (const { tokens } of hypotheses) {
+            let bestRawWords = hypotheses[0].rawWords;
+            let bestIndices = hypotheses[0].wordIndices;
+
+            for (const hyp of hypotheses) {
                 const targetLen = gabaritoArray.length;
                 const minWindow = Math.max(1, targetLen - (hasSpaceRequirement ? 4 : 2));
-                const maxWindow = Math.min(tokens.length, targetLen + 4);
+                const maxWindow = Math.min(hyp.tokens.length, targetLen + 4);
 
                 for (let w = minWindow; w <= maxWindow; w++) {
-                    for (let i = 0; i <= tokens.length - w; i++) {
-                        const slice = tokens.slice(i, i + w);
+                    for (let i = 0; i <= hyp.tokens.length - w; i++) {
+                        const slice = hyp.tokens.slice(i, i + w);
+                        const windowIndices = hyp.wordIndices.slice(i, i + w);
+
+                        // Uma janela de soletração NÃO deve conter palavras inteiras pronunciadas (isWholeWord)
+                        const containsWholeWords = windowIndices.some(idx => idx.isWholeWord);
+                        if (containsWholeWords && hyp.rawWords.length > 1) {
+                            continue;
+                        }
+
                         const s = this.calculateSimilarity(slice, gabaritoArray);
                         if (s > bestSim) {
                             bestSim = s;
                             bestWindow = slice;
+                            bestRawWords = hyp.rawWords;
+                            bestIndices = windowIndices;
                         }
                     }
                 }
             }
+
+            const alinhamento = this.buildAlignment(
+                gabaritoArray,
+                bestWindow,
+                bestRawWords,
+                bestIndices
+            );
 
             const pct = Math.round(bestSim * 100);
             return {
@@ -686,13 +957,15 @@ class SpellingValidator {
                 type: 'error',
                 reason: 'SPELLING_ERROR',
                 message: `❌ Erro na soletração (Similaridade: ${pct}%). Esperado: [${stringGabarito}]`,
+                alinhamento: alinhamento,
                 details: {
                     similarity: bestSim,
                     textoOriginal: rawText,
                     arrayLetrasDetectadas: hypotheses[0].tokens,
                     arrayLetrasCasadas: bestWindow,
                     stringFinal: bestWindow.join(' - '),
-                    stringGabarito: stringGabarito
+                    stringGabarito: stringGabarito,
+                    alinhamento: alinhamento
                 }
             };
         }
@@ -708,10 +981,20 @@ class SpellingValidator {
             suffixText,
             prefixSim,
             suffixSim,
-            tokens
+            tokens,
+            wordIndices: bestWordIndices,
+            rawWords: candidateRawWords
         } = bestCandidate;
 
         const stringFinalExtraida = matchedTokens.join(' - ');
+
+        // Constrói o alinhamento detalhado da soletração
+        const alinhamento = this.buildAlignment(
+            gabaritoArray,
+            matchedTokens,
+            candidateRawWords,
+            bestWordIndices
+        );
 
         // 3. VERIFICAÇÃO DE ESPAÇO EM EXPRESSÕES COMPOSTAS
         const noSpaceMatched = matchedTokens.filter(x => x !== 'SPACE').join('');
@@ -726,13 +1009,15 @@ class SpellingValidator {
                 type: 'error',
                 reason: 'MISSING_SPACE',
                 message: `⚠️ Você esqueceu de falar "SPACE" para separar as palavras da expressão!`,
+                alinhamento: alinhamento,
                 details: {
                     similarity: similarity,
                     textoOriginal: rawText,
                     arrayLetrasDetectadas: tokens,
                     arrayLetrasCasadas: matchedTokens,
                     stringFinal: stringFinalExtraida,
-                    stringGabarito: stringGabarito
+                    stringGabarito: stringGabarito,
+                    alinhamento: alinhamento
                 }
             };
         }
@@ -750,6 +1035,7 @@ class SpellingValidator {
                 type: 'error',
                 reason: 'MISSING_BOTH_WORDS',
                 message: `❌ Reprovado: Você esqueceu de falar a palavra no início e no final.`,
+                alinhamento: alinhamento,
                 details: {
                     temInicio,
                     temFim,
@@ -762,7 +1048,8 @@ class SpellingValidator {
                     arrayLetrasDetectadas: tokens,
                     arrayLetrasCasadas: matchedTokens,
                     stringFinal: stringFinalExtraida,
-                    stringGabarito: stringGabarito
+                    stringGabarito: stringGabarito,
+                    alinhamento: alinhamento
                 }
             };
         }
@@ -775,6 +1062,7 @@ class SpellingValidator {
                 type: 'error',
                 reason: 'MISSING_INITIAL_WORD',
                 message: `❌ Reprovado: Faltou falar a palavra antes de soletrar.`,
+                alinhamento: alinhamento,
                 details: {
                     temInicio,
                     temFim,
@@ -787,7 +1075,8 @@ class SpellingValidator {
                     arrayLetrasDetectadas: tokens,
                     arrayLetrasCasadas: matchedTokens,
                     stringFinal: stringFinalExtraida,
-                    stringGabarito: stringGabarito
+                    stringGabarito: stringGabarito,
+                    alinhamento: alinhamento
                 }
             };
         }
@@ -800,6 +1089,7 @@ class SpellingValidator {
                 type: 'error',
                 reason: 'MISSING_FINAL_WORD',
                 message: `❌ Reprovado: Faltou falar a palavra para finalizar.`,
+                alinhamento: alinhamento,
                 details: {
                     temInicio,
                     temFim,
@@ -812,7 +1102,8 @@ class SpellingValidator {
                     arrayLetrasDetectadas: tokens,
                     arrayLetrasCasadas: matchedTokens,
                     stringFinal: stringFinalExtraida,
-                    stringGabarito: stringGabarito
+                    stringGabarito: stringGabarito,
+                    alinhamento: alinhamento
                 }
             };
         }
@@ -825,6 +1116,7 @@ class SpellingValidator {
             type: 'success',
             reason: 'APPROVED_3_STEPS',
             message: `🎉 Perfeito! Executou os 3 passos rigorosamente: Palavra ➔ Soletração ➔ Palavra!`,
+            alinhamento: alinhamento,
             details: {
                 temInicio,
                 temFim,
@@ -837,7 +1129,8 @@ class SpellingValidator {
                 arrayLetrasDetectadas: tokens,
                 arrayLetrasCasadas: matchedTokens,
                 stringFinal: stringFinalExtraida,
-                stringGabarito: stringGabarito
+                stringGabarito: stringGabarito,
+                alinhamento: alinhamento
             }
         };
     }
