@@ -89,8 +89,9 @@ class SpellingValidator {
             '5': 'five', '6': 'six', '7': 'seven', '8': 'eight', '9': 'nine'
         };
 
-        this.DEFAULT_SIMILARITY_THRESHOLD = 0.85; // 85% de similaridade mínima para aprovação no miolo
-        this.DEFAULT_EDGE_THRESHOLD = 0.70;       // 70% de similaridade mínima para prefixo e sufixo
+        this.DEFAULT_SIMILARITY_THRESHOLD = 0.85;       // 85% de similaridade mínima para aprovação no miolo (Análise de Miolo Prioritária)
+        this.DEFAULT_EDGE_THRESHOLD = 0.70;             // 70% de similaridade mínima padrão para prefixo e sufixo
+        this.DEFAULT_COMPOUND_EDGE_THRESHOLD = 0.40;    // 40% de similaridade nas pontas para expressões compostas (Fallback Híbrido com miolo >= 90%)
 
         this.loadDictionary(customDictionary || DEFAULT_PHONETIC_DICTIONARY);
     }
@@ -852,12 +853,23 @@ class SpellingValidator {
                         const prefixText = prefixWords.join(' ').trim();
                         const suffixText = suffixWords.join(' ').trim();
 
-                        const prefixSim = prefixText ? this.calculateWordSimilarity(prefixText, target) : 0;
-                        const suffixSim = suffixText ? this.calculateWordSimilarity(suffixText, target) : 0;
+                        const edgeResult = this._validateEdges({
+                            similarity: sim,
+                            matchedTokens: windowSlice,
+                            startIndex: i,
+                            endIndex: i + w,
+                            startWord,
+                            endWord,
+                            prefixText,
+                            suffixText,
+                            tokens,
+                            rawWords
+                        }, target, targetWords, gabaritoArray, options);
 
                         let totalScore = sim * 100;
-                        if (prefixSim >= edgeThreshold) totalScore += 30;
-                        if (suffixSim >= edgeThreshold) totalScore += 30;
+                        if (edgeResult.temInicio) totalScore += 30;
+                        if (edgeResult.temFim) totalScore += 30;
+                        if (edgeResult.edgeBleedingDetected) totalScore += 10;
 
                         allCandidates.push({
                             startIndex: i,
@@ -868,12 +880,13 @@ class SpellingValidator {
                             endWord,
                             prefixText,
                             suffixText,
-                            prefixSim,
-                            suffixSim,
+                            prefixSim: edgeResult.prefixSim,
+                            suffixSim: edgeResult.suffixSim,
                             totalScore,
                             rawWords,
                             tokens,
-                            wordIndices: windowIndices
+                            wordIndices: windowIndices,
+                            edgeResult
                         });
                     }
                 }
@@ -979,8 +992,6 @@ class SpellingValidator {
             similarity,
             prefixText,
             suffixText,
-            prefixSim,
-            suffixSim,
             tokens,
             wordIndices: bestWordIndices,
             rawWords: candidateRawWords
@@ -1022,9 +1033,9 @@ class SpellingValidator {
             };
         }
 
-        // 4. FATIAMENTO POR ÂNCORA & VERIFICAÇÃO DAS BORDAS (Prefixo e Sufixo >= 70%)
-        const temInicio = prefixText.length > 0 && prefixSim >= edgeThreshold;
-        const temFim = suffixText.length > 0 && suffixSim >= edgeThreshold;
+        // 4. FATIAMENTO POR ÂNCORA & VERIFICAÇÃO DAS BORDAS (Borda Flexível com Tolerância Acústica)
+        const edgeResult = bestCandidate.edgeResult || this._validateEdges(bestCandidate, target, targetWords, gabaritoArray, options);
+        const { temInicio, temFim, prefixSim, suffixSim, edgeThresholdUsed, edgeBleedingDetected } = edgeResult;
 
         // 5. REGRAS DE NEGÓCIO ESTRITAS (Bloqueios Obrigatórios dos 3 Passos)
         if (!temInicio && !temFim) {
@@ -1043,6 +1054,8 @@ class SpellingValidator {
                     suffixText,
                     prefixSim,
                     suffixSim,
+                    edgeThresholdUsed,
+                    edgeBleedingDetected,
                     similarity: similarity,
                     textoOriginal: rawText,
                     arrayLetrasDetectadas: tokens,
@@ -1070,6 +1083,8 @@ class SpellingValidator {
                     suffixText,
                     prefixSim,
                     suffixSim,
+                    edgeThresholdUsed,
+                    edgeBleedingDetected,
                     similarity: similarity,
                     textoOriginal: rawText,
                     arrayLetrasDetectadas: tokens,
@@ -1097,6 +1112,8 @@ class SpellingValidator {
                     suffixText,
                     prefixSim,
                     suffixSim,
+                    edgeThresholdUsed,
+                    edgeBleedingDetected,
                     similarity: similarity,
                     textoOriginal: rawText,
                     arrayLetrasDetectadas: tokens,
@@ -1108,7 +1125,7 @@ class SpellingValidator {
             };
         }
 
-        // 6. APROVAÇÃO 100% RIGOROSA (Palavra + Soletração + Palavra)
+        // 6. APROVAÇÃO (Palavra + Soletração + Palavra)
         return {
             isValid: true,
             isFullyCompliant: true,
@@ -1124,6 +1141,8 @@ class SpellingValidator {
                 suffixText,
                 prefixSim,
                 suffixSim,
+                edgeThresholdUsed,
+                edgeBleedingDetected,
                 similarity: similarity,
                 textoOriginal: rawText,
                 arrayLetrasDetectadas: tokens,
@@ -1132,6 +1151,158 @@ class SpellingValidator {
                 stringGabarito: stringGabarito,
                 alinhamento: alinhamento
             }
+        };
+    }
+
+    /**
+     * Valida as pontas do Sanduíche (Palavra Inicial e Final) aplicando Borda Flexível:
+     * 1. Análise de Miolo Prioritária: Se a similaridade do miolo for >= 85%, o sistema reconhece a soletração.
+     * 2. Absorção de Pontas (Edge Bleeding): Tolera resíduos e ecos fonéticos nas pontas (ex: A-S antes/depois da soletração).
+     * 3. Fallback Híbrido: Para expressões compostas (com SPACE), se miolo >= 90%, o threshold das pontas cai para 40%.
+     * 
+     * @param {Object} candidate - Candidato selecionado da janela de soletração
+     * @param {string} target - Palavra/frase alvo normalizada
+     * @param {Array<string>} targetWords - Array de palavras da frase alvo
+     * @param {Array<string>} gabaritoArray - Gabarito de tokens oficial
+     * @param {Object} [options] - Opções adicionais (threshold, edgeThreshold, compoundEdgeThreshold)
+     * @returns {{ temInicio: boolean, temFim: boolean, prefixSim: number, suffixSim: number, edgeThresholdUsed: number, edgeBleedingDetected: boolean }}
+     */
+    _validateEdges(candidate, target, targetWords, gabaritoArray, options = {}) {
+        const hasSpaceRequirement = targetWords.length > 1;
+        const defaultEdgeThreshold = typeof options.edgeThreshold === 'number' ? options.edgeThreshold : this.DEFAULT_EDGE_THRESHOLD; // 0.70
+        const compoundFallbackThreshold = typeof options.compoundEdgeThreshold === 'number' ? options.compoundEdgeThreshold : this.DEFAULT_COMPOUND_EDGE_THRESHOLD; // 0.40
+
+        const similarity = candidate.similarity || 0;
+        
+        // Fallback Híbrido: Para expressões compostas, com miolo >= 90%, o threshold exigido nas pontas cai para 40%
+        const isHybridEligible = hasSpaceRequirement && similarity >= 0.90;
+        const effectiveEdgeThreshold = isHybridEligible ? Math.min(defaultEdgeThreshold, compoundFallbackThreshold) : defaultEdgeThreshold;
+
+        const firstWord = targetWords[0] || '';
+        const lastWord = targetWords[targetWords.length - 1] || '';
+        const firstWordGabarito = this._buildGabarito(firstWord);
+        const lastWordGabarito = this._buildGabarito(lastWord);
+
+        const prefixText = candidate.prefixText || '';
+        const suffixText = candidate.suffixText || '';
+        const startIndex = candidate.startIndex ?? 0;
+        const endIndex = candidate.endIndex ?? (candidate.tokens ? candidate.tokens.length : 0);
+        const tokens = candidate.tokens || [];
+        const matchedTokens = candidate.matchedTokens || [];
+
+        let temInicio = false;
+        let temFim = false;
+        let edgeBleedingDetected = false;
+
+        // --- AVALIAÇÃO DA BORDA INICIAL (temInicio) ---
+        let bestPrefixSim = 0;
+
+        // 1.1 Comparação do texto do prefixo com a frase alvo completa e com a primeira palavra
+        if (prefixText.length > 0) {
+            const simTarget = this.calculateWordSimilarity(prefixText, target);
+            const simFirst = this.calculateWordSimilarity(prefixText, firstWord);
+            bestPrefixSim = Math.max(simTarget, simFirst);
+
+            // 1.2 Comparação fonética dos tokens do prefixo
+            const prefixTokens = this.tokenize(prefixText);
+            if (prefixTokens.length > 0) {
+                const simTokensFirst = this.calculateSimilarity(prefixTokens, firstWordGabarito);
+                const simTokensTarget = this.calculateSimilarity(prefixTokens, gabaritoArray);
+                bestPrefixSim = Math.max(bestPrefixSim, simTokensFirst, simTokensTarget);
+            }
+
+            if (bestPrefixSim >= effectiveEdgeThreshold) {
+                temInicio = true;
+            }
+        }
+
+        // 1.3 Absorção de Pontas Externa (Tokens residuais antes da janela de soletração)
+        if (!temInicio && startIndex > 0) {
+            const leftoverPrefixTokens = tokens.slice(0, startIndex);
+            if (leftoverPrefixTokens.length > 0) {
+                const simResFirst = this.calculateSimilarity(leftoverPrefixTokens, firstWordGabarito);
+                const simResTarget = this.calculateSimilarity(leftoverPrefixTokens, gabaritoArray);
+                const maxResSim = Math.max(simResFirst, simResTarget);
+                if (maxResSim >= effectiveEdgeThreshold) {
+                    temInicio = true;
+                    edgeBleedingDetected = true;
+                    bestPrefixSim = Math.max(bestPrefixSim, maxResSim);
+                }
+            }
+        }
+
+        // 1.4 Absorção de Pontas Interna (Vazamento Acústico onde a palavra inicial fundiu no miolo)
+        if (!temInicio && isHybridEligible) {
+            // Em expressões compostas com miolo >= 90%, verifica se o início do miolo contém o eco da primeira palavra
+            if (firstWordGabarito.length > 0 && matchedTokens.length >= firstWordGabarito.length) {
+                const headSlice = matchedTokens.slice(0, firstWordGabarito.length);
+                const headSim = this.calculateSimilarity(headSlice, firstWordGabarito);
+                if (headSim >= effectiveEdgeThreshold || headSim >= 0.50) {
+                    temInicio = true;
+                    edgeBleedingDetected = true;
+                    bestPrefixSim = Math.max(bestPrefixSim, headSim);
+                }
+            }
+        }
+
+        // --- AVALIAÇÃO DA BORDA FINAL (temFim) ---
+        let bestSuffixSim = 0;
+
+        // 2.1 Comparação do texto do sufixo com a frase alvo completa e com a última palavra
+        if (suffixText.length > 0) {
+            const simTarget = this.calculateWordSimilarity(suffixText, target);
+            const simLast = this.calculateWordSimilarity(suffixText, lastWord);
+            bestSuffixSim = Math.max(simTarget, simLast);
+
+            // 2.2 Comparação fonética dos tokens do sufixo
+            const suffixTokens = this.tokenize(suffixText);
+            if (suffixTokens.length > 0) {
+                const simTokensLast = this.calculateSimilarity(suffixTokens, lastWordGabarito);
+                const simTokensTarget = this.calculateSimilarity(suffixTokens, gabaritoArray);
+                bestSuffixSim = Math.max(bestSuffixSim, simTokensLast, simTokensTarget);
+            }
+
+            if (bestSuffixSim >= effectiveEdgeThreshold) {
+                temFim = true;
+            }
+        }
+
+        // 2.3 Absorção de Pontas Externa (Tokens residuais após a janela de soletração)
+        if (!temFim && endIndex < tokens.length) {
+            const leftoverSuffixTokens = tokens.slice(endIndex);
+            if (leftoverSuffixTokens.length > 0) {
+                const simResLast = this.calculateSimilarity(leftoverSuffixTokens, lastWordGabarito);
+                const simResTarget = this.calculateSimilarity(leftoverSuffixTokens, gabaritoArray);
+                const maxResSim = Math.max(simResLast, simResTarget);
+                if (maxResSim >= effectiveEdgeThreshold) {
+                    temFim = true;
+                    edgeBleedingDetected = true;
+                    bestSuffixSim = Math.max(bestSuffixSim, maxResSim);
+                }
+            }
+        }
+
+        // 2.4 Absorção de Pontas Interna (Vazamento Acústico onde a palavra final fundiu no miolo)
+        if (!temFim && isHybridEligible) {
+            // Em expressões compostas com miolo >= 90%, verifica se o final do miolo contém o eco da última palavra
+            if (lastWordGabarito.length > 0 && matchedTokens.length >= lastWordGabarito.length) {
+                const tailSlice = matchedTokens.slice(-lastWordGabarito.length);
+                const tailSim = this.calculateSimilarity(tailSlice, lastWordGabarito);
+                if (tailSim >= effectiveEdgeThreshold || tailSim >= 0.50) {
+                    temFim = true;
+                    edgeBleedingDetected = true;
+                    bestSuffixSim = Math.max(bestSuffixSim, tailSim);
+                }
+            }
+        }
+
+        return {
+            temInicio,
+            temFim,
+            prefixSim: bestPrefixSim,
+            suffixSim: bestSuffixSim,
+            edgeThresholdUsed: effectiveEdgeThreshold,
+            edgeBleedingDetected
         };
     }
 

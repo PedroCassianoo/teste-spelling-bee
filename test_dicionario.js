@@ -150,6 +150,24 @@ assert("Falta palavra final -> Reprovado com MISSING_FINAL_WORD", !res8.isValid 
 const res9 = validator.validate("t a u g h t", "taught");
 assert("Falta ambas as palavras -> Reprovado com MISSING_BOTH_WORDS", !res9.isValid && res9.reason === 'MISSING_BOTH_WORDS');
 
+console.log("\n--- 6B. Validação de Borda Flexível & Tolerância Acústica (Vazamento Acústico / Edge Bleeding) ---");
+
+// Teste J: Caso Real - Vazamento Acústico em 'as tasty as' ([A - S - A - T - A - S - T - Y - SPACE - A - S])
+const res10 = validator.validate("a s a t a s t y space a s", "as tasty as");
+assert("Vazamento Acústico em 'as tasty as' (91% similaridade) -> APROVADO via Borda Flexível", res10.isValid === true && res10.isFullyCompliant === true);
+
+// Teste K: Absorção de Pontas com tokens residuais (A-S no início e no fim)
+const res11 = validator.validate("a s a s space t a s t y space a s a s", "as tasty as");
+assert("Absorção de resíduos A-S nas pontas -> APROVADO via Edge Bleeding", res11.isValid === true && res11.isFullyCompliant === true);
+
+// Teste L: Fallback Híbrido com threshold reduzido (40%) para expressão composta com miolo > 90%
+const res12 = validator.validate("as a s space t a s t y space a s as", "as tasty as");
+assert("Expressão composta com bordas parciais 'as' -> APROVADO via Fallback Híbrido", res12.isValid === true && res12.isFullyCompliant === true);
+
+// Teste M: Palavra falada no início + miolo com fusão acústica final
+const res13 = validator.validate("as tasty as a s a t a s t y space a s", "as tasty as");
+assert("Início completo + fusão acústica no fim -> APROVADO", res13.isValid === true && res13.isFullyCompliant === true);
+
 console.log("\n--- 7. Validação da Geração de Keywords do Deepgram (Cabresto - Fase 2) ---");
 const { buildKeywordsParaRodada } = require('./build-deepgram-keywords.js');
 
